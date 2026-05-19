@@ -86,6 +86,26 @@ Translation table:
 
 ---
 
+## Locked decisions (don't relitigate)
+
+- **Protobuf codec is hand-rolled.** No `protobuf` dep, no `protoc` build step,
+  no vendored `aws-kinesis-agg`. The KPL aggregation schema has 3 messages and
+  ~7 fields total; wire format is varints + length-delimited. ~150 lines of
+  encoder + decoder in `aiokpl/aggregation.py`. The schema is frozen by AWS;
+  we will never regenerate.
+- **Type checker is `ty`** (Astral, pre-release on PyPI). Not mypy. Not pyright.
+- **Test runner is `pytest`**, runner+orchestrator is `nox` (`noxfile.py`).
+- **AWS emulator for integration tests is Floci** via `testcontainers-floci`
+  (LocalStack-compatible drop-in replacement; LocalStack Community Edition was
+  archived March 2026). Used Phase 2+, not Phase 1.
+- **Coverage gate is 100%** (`fail_under = 100`). No exceptions, no excludes
+  for "hard to test" — if you can't cover a branch, delete it.
+- **Package manager is `uv`**.
+- **Lint+format is `ruff`** with rules in `pyproject.toml`.
+- **No runtime deps in Phase 1.** Pure stdlib + hashlib.
+
+---
+
 ## Aggregation format
 
 This is the **only** wire format that matters and we must produce it byte-exact

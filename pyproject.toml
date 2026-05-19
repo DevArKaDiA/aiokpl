@@ -10,37 +10,114 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Juan F. Rojas" }]
-keywords = ["kinesis", "aws", "async", "producer", "kpl"]
+keywords = ["kinesis", "aws", "async", "producer", "kpl", "aggregation"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "Framework :: AsyncIO",
   "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Distributed Computing",
+  "Typing :: Typed",
 ]
-dependencies = [
-  "aiobotocore>=2.13",
-  "sortedcontainers>=2.4",
-]
+# Runtime deps are added incrementally per phase. Phase 1 (codec) has ZERO
+# runtime deps — protobuf wire format is hand-rolled. Phase 2+ will add
+# aiobotocore, sortedcontainers, etc.
+dependencies = []
 
 [project.optional-dependencies]
-dev = [
+test = [
   "pytest>=8",
   "pytest-asyncio>=0.23",
-  "moto>=5",
-  "ruff>=0.6",
-  "mypy>=1.10",
+  "pytest-cov>=5",
+  "hypothesis>=6.100",
 ]
+integration = [
+  "testcontainers-floci>=0.1",
+  "aiobotocore>=2.13",
+]
+lint = [
+  "ruff>=0.6",
+  "ty>=0.0.1a1",
+]
+dev = [
+  "aiokpl[test,integration,lint]",
+  "nox>=2024.4",
+  "pre-commit>=3.7",
+]
+
+[project.urls]
+Repository = "https://github.com/juanrojas/aiokpl"
 
 [tool.hatch.build.targets.wheel]
 packages = ["aiokpl"]
 
+# ─── pytest ────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = [
+  "-ra",
+  "--strict-markers",
+  "--strict-config",
+]
+markers = [
+  "integration: requires a running floci/localstack instance (deselect with '-m \"not integration\"')",
+  "slow: takes more than a second",
+]
+filterwarnings = ["error"]
 
+# ─── coverage ──────────────────────────────────────────────────────────────
+[tool.coverage.run]
+branch = true
+source = ["aiokpl"]
+parallel = true
+
+[tool.coverage.paths]
+source = ["aiokpl", "*/site-packages/aiokpl"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = false
+exclude_also = [
+  "raise NotImplementedError",
+  "if TYPE_CHECKING:",
+  "@overload",
+  "\\.\\.\\.",
+]
+
+# ─── ruff ──────────────────────────────────────────────────────────────────
 [tool.ruff]
 line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+select = [
+  "E", "F", "W",       # pycodestyle / pyflakes
+  "I",                 # isort
+  "B",                 # bugbear
+  "UP",                # pyupgrade
+  "SIM",               # simplify
+  "RUF",               # ruff-specific
+  "ASYNC",             # async best practices
+  "PTH",               # pathlib over os.path
+  "PIE",               # misc
+  "RET",               # returns
+  "C4",                # comprehensions
+]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B008", "SIM117"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ─── ty (Astral type checker, mypy successor) ──────────────────────────────
+[tool.ty]
+# ty is pre-release; config surface is minimal. Strict mode by default.
