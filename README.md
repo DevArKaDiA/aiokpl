@@ -1,5 +1,11 @@
 # aiokpl
 
+![CI](https://github.com/juanrojas/aiokpl/actions/workflows/ci.yml/badge.svg)
+[![codecov](https://codecov.io/gh/juanrojas/aiokpl/branch/main/graph/badge.svg)](https://codecov.io/gh/juanrojas/aiokpl)
+![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)
+![License](https://img.shields.io/badge/license-Apache--2.0-blue)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
 **Pure-Python async Kinesis producer. KPL-equivalent without a native daemon.**
 
 > A library that respects the shard as the unit of optimization, measures time
