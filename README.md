@@ -21,8 +21,8 @@ See the [Roadmap](#roadmap) below for what's coming.
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Repo scaffolding, design docs | ✅ Done |
-| 1 | Aggregation codec (KPL wire format) | 🚧 Next |
-| 2 | ShardMap + prediction | ⏳ Planned |
+| 1 | Aggregation codec (KPL wire format) | ✅ Done |
+| 2 | ShardMap + prediction | 🚧 Next |
 | 3 | Reducer, Aggregator, Collector | ⏳ Planned |
 | 4 | Limiter + TokenBucket | ⏳ Planned |
 | 5 | Sender + Retrier | ⏳ Planned |
