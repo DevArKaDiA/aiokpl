@@ -10,10 +10,14 @@ from aiokpl.aggregation import (
     is_aggregated,
 )
 from aiokpl.hashing import md5_hash_key, parse_explicit_hash_key
+from aiokpl.shard_map import Shard, ShardMap, ShardMapState
 
 __all__ = [
     "MAGIC",
     "DecodedRecord",
+    "Shard",
+    "ShardMap",
+    "ShardMapState",
     "Tag",
     "UserRecord",
     "decode_aggregated",
