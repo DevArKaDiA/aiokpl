@@ -1,26 +1,22 @@
-"""Floci-backed integration tests for :class:`aiokpl.shard_map.ShardMap`.
+"""Integration tests for :class:`aiokpl.shard_map.ShardMap`.
 
 Unit tests exercise the shard map with a fake ``list_shards_fn``. Those tests
-only prove the map is internally consistent with our parsing. The tests in this
-module aim to prove a stronger property: against a real Kinesis-compatible
-service (Floci), ``ShardMap.predict()`` agrees byte-exactly with the
-``ShardId`` the service itself returns from ``put_record``. This validates the
-shard-id regex, the hash-range parsing, the bisect algorithm, and the
-paginated ``ListShards`` handling end-to-end.
+only prove the map is internally consistent with our parsing. The tests here
+aim for a stronger property: against a real Kinesis-compatible service
+(``etspaceman/kinesis-mock`` — the same Scala backend LocalStack uses for
+Kinesis), ``ShardMap.predict()`` agrees byte-exactly with the ``ShardId`` the
+service itself returns from ``put_record``. This validates shard-id regex,
+hash-range parsing, the bisect algorithm, and paginated ``ListShards``
+handling end-to-end.
 
 ``ShardMap`` requires an *async* ``list_shards_fn``; the conftest's Kinesis
 client is sync (botocore, not aiobotocore). We wrap each call with
 ``asyncio.to_thread`` so the test harness stays sync-only and we don't have to
 pull aiobotocore into the test surface.
 
-A Floci caveat: as of 2026-05, Floci reports every shard as covering the full
-``[0, 2**128 - 1]`` hash range — disjoint partitioning is not modelled — and
-routes ``put_record`` round-robin across shard ids regardless of partition key.
-Byte-exact routing equivalence with our hash-based predictor is therefore not
-testable against this emulator; the relevant tests detect this at runtime and
-skip with a clear reason rather than xfail on a moving target. The tests still
-exercise ShardMap's parsing, pagination, refresh, and ``hashrange()`` against
-the real service.
+Each test detects degenerate emulator behaviour at runtime (overlapping shard
+ranges, missing pagination, etc.) and skips with a clear reason, so the same
+file works against any Kinesis-compatible backend without code changes.
 """
 
 from __future__ import annotations
@@ -67,7 +63,7 @@ def _make_async_adapter(client: Any):
 def _has_disjoint_hash_ranges(shards: list[dict[str, Any]]) -> bool:
     """Whether the service reports proper disjoint hash partitioning.
 
-    Floci reports every shard with the full ``[0, 2**128 - 1]`` range, so it
+    Some emulators report every shard with the full ``[0, 2**128 - 1]`` range, so it
     routes round-robin instead of by hash. Real Kinesis assigns disjoint
     contiguous ranges. We detect the degenerate case so the byte-exact routing
     assertion can be skipped with a clear reason on emulators.
@@ -177,7 +173,7 @@ async def test_shardmap_handles_split_via_invalidate(kinesis_client: Any) -> Non
                     NewStartingHashKey=str(mid),
                 )
             except Exception as exc:  # pragma: no cover - emulator-dependent
-                pytest.xfail(f"floci split_shard not supported / failed: {exc!r}")
+                pytest.xfail(f"emulator split_shard not supported / failed: {exc!r}")
 
             await asyncio.to_thread(_wait_stream_active, kinesis_client, stream_name, 60.0)
 
@@ -190,7 +186,7 @@ async def test_shardmap_handles_split_via_invalidate(kinesis_client: Any) -> Non
                     break
             if new_child is None:
                 pytest.xfail(
-                    "floci did not produce a child shard with the requested "
+                    "emulator did not produce a child shard with the requested "
                     f"NewStartingHashKey={mid} for parent {target_id}; "
                     f"post-split shards: {post_split['Shards']!r}"
                 )
@@ -215,11 +211,14 @@ async def test_shardmap_handles_split_via_invalidate(kinesis_client: Any) -> Non
             if not refreshed:
                 pytest.fail("ShardMap did not refresh after invalidate()")
 
-            # Floci's ListShards may still report identical full-range shards
-            # post-split. If so we can only assert the refresh happened and that
-            # the new child is in the map; predict() vs routing equivalence is
-            # not testable on this backend.
-            if not _has_disjoint_hash_ranges(post_split["Shards"]):
+            # Disjointness check must look at OPEN shards only — the closed
+            # parent's full range otherwise overlaps both children by design.
+            open_post_split = await asyncio.to_thread(
+                kinesis_client.list_shards,
+                StreamName=stream_name,
+                ShardFilter={"Type": "AT_LATEST"},
+            )
+            if not _has_disjoint_hash_ranges(open_post_split["Shards"]):
                 assert sm.hashrange(new_child_id) is not None
                 pytest.skip(
                     "emulator reports overlapping shard ranges after split_shard; "
@@ -268,7 +267,7 @@ async def test_shardmap_pagination(kinesis_client: Any) -> None:
             truth_shards = truth["Shards"]
             assert len(truth_shards) == 12
 
-            # Detect whether the backend actually paginates. Floci truncates
+            # Detect whether the backend actually paginates. Some emulators truncate
             # to MaxResults and returns no NextToken, which means our paginated
             # path can only ever see the first page. We exercise the page-1
             # behaviour here but skip the cross-page assertions if the backend

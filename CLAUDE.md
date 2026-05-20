@@ -95,9 +95,15 @@ Translation table:
   we will never regenerate.
 - **Type checker is `ty`** (Astral, pre-release on PyPI). Not mypy. Not pyright.
 - **Test runner is `pytest`**, runner+orchestrator is `nox` (`noxfile.py`).
-- **AWS emulator for integration tests is Floci** via `testcontainers-floci`
-  (LocalStack-compatible drop-in replacement; LocalStack Community Edition was
-  archived March 2026). Used Phase 2+, not Phase 1.
+- **AWS emulator for integration tests is `etspaceman/kinesis-mock`**
+  (`ghcr.io/etspaceman/kinesis-mock:0.5.2`) — the same Scala backend LocalStack
+  uses for Kinesis. Byte-exact compatible with AWS for hash-key routing,
+  `ListShards` pagination, and `SplitShard` child ranges. We started on Floci
+  but pivoted: Floci faked shard ranges and routed round-robin, making
+  byte-exact prediction tests impossible. Conftest spawns the container via
+  the `docker` SDK directly (no testcontainers wrapper). API is HTTPS on port
+  4567 with a self-signed cert (`verify=False` in the test harness),
+  healthcheck is plain HTTP on port 4568.
 - **Coverage gate is 100%** (`fail_under = 100`). No exceptions, no excludes
   for "hard to test" — if you can't cover a branch, delete it.
 - **Package manager is `uv`**.
