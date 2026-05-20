@@ -11,8 +11,9 @@ handling end-to-end.
 
 ``ShardMap`` requires an *async* ``list_shards_fn``; the conftest's Kinesis
 client is sync (botocore, not aiobotocore). We wrap each call with
-``asyncio.to_thread`` so the test harness stays sync-only and we don't have to
-pull aiobotocore into the test surface.
+``anyio.to_thread.run_sync`` so the harness stays backend-agnostic (asyncio
+and trio both work) and we don't have to pull aiobotocore into the test
+surface.
 
 Each test detects degenerate emulator behaviour at runtime (overlapping shard
 ranges, missing pagination, etc.) and skips with a clear reason, so the same
@@ -21,14 +22,16 @@ file works against any Kinesis-compatible backend without code changes.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
+import functools
 import random
 import re
 import time
 from typing import Any
 from uuid import uuid4
 
+import anyio
+import anyio.to_thread
 import pytest
 
 from aiokpl.hashing import md5_hash_key
@@ -53,21 +56,19 @@ def _wait_stream_active(client: Any, stream_name: str, timeout: float = 60.0) ->
     raise TimeoutError(f"stream {stream_name} did not become ACTIVE in {timeout}s")
 
 
+async def _to_thread(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Bridge to a sync callable supporting kwargs."""
+    return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+
+
 def _make_async_adapter(client: Any):
     async def list_shards_fn(**kwargs: Any) -> dict[str, Any]:
-        return await asyncio.to_thread(client.list_shards, **kwargs)
+        return await _to_thread(client.list_shards, **kwargs)
 
     return list_shards_fn
 
 
 def _has_disjoint_hash_ranges(shards: list[dict[str, Any]]) -> bool:
-    """Whether the service reports proper disjoint hash partitioning.
-
-    Some emulators report every shard with the full ``[0, 2**128 - 1]`` range, so it
-    routes round-robin instead of by hash. Real Kinesis assigns disjoint
-    contiguous ranges. We detect the degenerate case so the byte-exact routing
-    assertion can be skipped with a clear reason on emulators.
-    """
     if len(shards) <= 1:
         return True
     ranges = sorted(
@@ -87,20 +88,16 @@ async def test_shardmap_predicts_actual_routing(kinesis_client: Any) -> None:
     stream_name = f"aiokpl-sm-it-{uuid4().hex[:8]}"
     kinesis_client.create_stream(StreamName=stream_name, ShardCount=4)
     try:
-        await asyncio.to_thread(_wait_stream_active, kinesis_client, stream_name)
+        await _to_thread(_wait_stream_active, kinesis_client, stream_name)
 
-        truth = await asyncio.to_thread(kinesis_client.list_shards, StreamName=stream_name)
+        truth = await _to_thread(kinesis_client.list_shards, StreamName=stream_name)
         disjoint = _has_disjoint_hash_ranges(truth["Shards"])
         truth_ids = {_parse_shard_id(s["ShardId"]) for s in truth["Shards"]}
 
         list_shards_fn = _make_async_adapter(kinesis_client)
-        sm = ShardMap(stream_name, list_shards_fn)
-        try:
+        async with ShardMap(stream_name, list_shards_fn) as sm:
             await sm.start()
             assert sm.state is ShardMapState.READY
-            # Even on a backend that doesn't honor hash-based routing, the
-            # ShardMap must learn every shard id the service reports and the
-            # range it reports for them.
             for s in truth["Shards"]:
                 sid = _parse_shard_id(s["ShardId"])
                 start = int(s["HashKeyRange"]["StartingHashKey"])
@@ -123,7 +120,7 @@ async def test_shardmap_predicts_actual_routing(kinesis_client: Any) -> None:
                 hk = md5_hash_key(pk)
                 predicted = sm.predict(hk)
                 assert predicted in truth_ids
-                response = await asyncio.to_thread(
+                response = await _to_thread(
                     kinesis_client.put_record,
                     StreamName=stream_name,
                     Data=b"x",
@@ -133,8 +130,6 @@ async def test_shardmap_predicts_actual_routing(kinesis_client: Any) -> None:
                 if predicted != actual:
                     mismatches.append((pk, predicted if predicted is not None else -1, actual))
             assert not mismatches, f"predict() disagreed with Kinesis on: {mismatches[:5]}"
-        finally:
-            await sm.aclose()
     finally:
         with contextlib.suppress(Exception):
             kinesis_client.delete_stream(StreamName=stream_name, EnforceConsumerDeletion=True)
@@ -145,17 +140,16 @@ async def test_shardmap_handles_split_via_invalidate(kinesis_client: Any) -> Non
     stream_name = f"aiokpl-sm-it-{uuid4().hex[:8]}"
     kinesis_client.create_stream(StreamName=stream_name, ShardCount=2)
     try:
-        await asyncio.to_thread(_wait_stream_active, kinesis_client, stream_name)
+        await _to_thread(_wait_stream_active, kinesis_client, stream_name)
 
         list_shards_fn = _make_async_adapter(kinesis_client)
-        sm = ShardMap(stream_name, list_shards_fn)
-        try:
+        async with ShardMap(stream_name, list_shards_fn) as sm:
             await sm.start()
             assert sm.state is ShardMapState.READY
             initial_updated_at = sm.updated_at
             assert initial_updated_at is not None
 
-            initial = await asyncio.to_thread(kinesis_client.list_shards, StreamName=stream_name)
+            initial = await _to_thread(kinesis_client.list_shards, StreamName=stream_name)
             initial_shards = initial["Shards"]
             assert len(initial_shards) == 2
 
@@ -166,7 +160,7 @@ async def test_shardmap_handles_split_via_invalidate(kinesis_client: Any) -> Non
             mid = (start + end) // 2
 
             try:
-                await asyncio.to_thread(
+                await _to_thread(
                     kinesis_client.split_shard,
                     StreamName=stream_name,
                     ShardToSplit=target_id,
@@ -175,9 +169,9 @@ async def test_shardmap_handles_split_via_invalidate(kinesis_client: Any) -> Non
             except Exception as exc:  # pragma: no cover - emulator-dependent
                 pytest.xfail(f"emulator split_shard not supported / failed: {exc!r}")
 
-            await asyncio.to_thread(_wait_stream_active, kinesis_client, stream_name, 60.0)
+            await _to_thread(_wait_stream_active, kinesis_client, stream_name, 60.0)
 
-            post_split = await asyncio.to_thread(kinesis_client.list_shards, StreamName=stream_name)
+            post_split = await _to_thread(kinesis_client.list_shards, StreamName=stream_name)
             new_child = None
             for s in post_split["Shards"]:
                 hkr = s["HashKeyRange"]
@@ -194,7 +188,7 @@ async def test_shardmap_handles_split_via_invalidate(kinesis_client: Any) -> Non
             new_child_start = int(new_child["HashKeyRange"]["StartingHashKey"])
             new_child_end = int(new_child["HashKeyRange"]["EndingHashKey"])
 
-            await asyncio.sleep(0.01)
+            await anyio.sleep(0.01)
             await sm.invalidate(seen_at=time.monotonic(), predicted_shard=None)
 
             refresh_deadline = time.monotonic() + 30.0
@@ -207,13 +201,11 @@ async def test_shardmap_handles_split_via_invalidate(kinesis_client: Any) -> Non
                 ):
                     refreshed = True
                     break
-                await asyncio.sleep(0.05)
+                await anyio.sleep(0.05)
             if not refreshed:
                 pytest.fail("ShardMap did not refresh after invalidate()")
 
-            # Disjointness check must look at OPEN shards only — the closed
-            # parent's full range otherwise overlaps both children by design.
-            open_post_split = await asyncio.to_thread(
+            open_post_split = await _to_thread(
                 kinesis_client.list_shards,
                 StreamName=stream_name,
                 ShardFilter={"Type": "AT_LATEST"},
@@ -236,15 +228,13 @@ async def test_shardmap_handles_split_via_invalidate(kinesis_client: Any) -> Non
                 f"could not find a partition key whose hash lands in child "
                 f"{new_child_id} range [{new_child_start}, {new_child_end}]"
             )
-            response = await asyncio.to_thread(
+            response = await _to_thread(
                 kinesis_client.put_record,
                 StreamName=stream_name,
                 Data=b"x",
                 PartitionKey=probe_pk,
             )
             assert _parse_shard_id(response["ShardId"]) == new_child_id
-        finally:
-            await sm.aclose()
     finally:
         with contextlib.suppress(Exception):
             kinesis_client.delete_stream(StreamName=stream_name, EnforceConsumerDeletion=True)
@@ -255,24 +245,18 @@ async def test_shardmap_pagination(kinesis_client: Any) -> None:
     stream_name = f"aiokpl-sm-it-{uuid4().hex[:8]}"
     kinesis_client.create_stream(StreamName=stream_name, ShardCount=12)
     try:
-        await asyncio.to_thread(_wait_stream_active, kinesis_client, stream_name)
+        await _to_thread(_wait_stream_active, kinesis_client, stream_name)
 
         list_shards_fn = _make_async_adapter(kinesis_client)
-        sm = ShardMap(stream_name, list_shards_fn, max_results_per_page=5)
-        try:
+        async with ShardMap(stream_name, list_shards_fn, max_results_per_page=5) as sm:
             await sm.start()
             assert sm.state is ShardMapState.READY
 
-            truth = await asyncio.to_thread(kinesis_client.list_shards, StreamName=stream_name)
+            truth = await _to_thread(kinesis_client.list_shards, StreamName=stream_name)
             truth_shards = truth["Shards"]
             assert len(truth_shards) == 12
 
-            # Detect whether the backend actually paginates. Some emulators truncate
-            # to MaxResults and returns no NextToken, which means our paginated
-            # path can only ever see the first page. We exercise the page-1
-            # behaviour here but skip the cross-page assertions if the backend
-            # doesn't honor pagination.
-            probe = await asyncio.to_thread(
+            probe = await _to_thread(
                 kinesis_client.list_shards,
                 StreamName=stream_name,
                 MaxResults=5,
@@ -305,8 +289,6 @@ async def test_shardmap_pagination(kinesis_client: Any) -> None:
                     "emulator does not paginate ListShards (truncates to MaxResults "
                     "and returns no NextToken); cross-page behaviour not testable"
                 )
-        finally:
-            await sm.aclose()
     finally:
         with contextlib.suppress(Exception):
             kinesis_client.delete_stream(StreamName=stream_name, EnforceConsumerDeletion=True)

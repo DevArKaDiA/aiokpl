@@ -13,20 +13,25 @@ Transport-agnostic on purpose: the constructor takes an injected
 dict. Wiring to ``aiobotocore`` happens in the Sender/Producer phases. Tests
 inject a fake callable.
 
-Not safe across event loops or threads. Single loop, async only.
+Lifecycle is structured: enter the :class:`ShardMap` as an async context
+manager, which owns an :class:`anyio.abc.TaskGroup` for the background refresh
+and closed-shard-cleanup tasks. ``aclose()`` stays as a backward-compatible
+alias for context exit.
 """
 
 from __future__ import annotations
 
-import asyncio
 import bisect
-import contextlib
 import enum
 import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from types import TracebackType
+
+import anyio
+from anyio.abc import TaskGroup
 
 logger = logging.getLogger("aiokpl.shard_map")
 
@@ -96,7 +101,7 @@ class ShardMap:
         closed_shard_ttl: float = 60.0,
         max_results_per_page: int = 1000,
         clock: Callable[[], float] = time.monotonic,
-        sleep_fn: SleepFn = asyncio.sleep,
+        sleep_fn: SleepFn = anyio.sleep,
     ) -> None:
         self._stream_name = stream_name
         self._stream_arn = stream_arn
@@ -113,10 +118,13 @@ class ShardMap:
         self._closed_at: dict[int, float] = {}
         self._updated_at: float | None = None
         self._backoff = min_backoff
-        self._lock = asyncio.Lock()
-        self._refresh_task: asyncio.Task[None] | None = None
-        self._cleanup_handle: asyncio.TimerHandle | None = None
+        self._lock = anyio.Lock()
+        self._refresh_done = anyio.Event()
+        self._refresh_in_flight = False
+        self._cleanup_scope: anyio.CancelScope | None = None
+        self._refresh_scope: anyio.CancelScope | None = None
         self._closed = False
+        self._tg: TaskGroup | None = None
 
     # ─── Public read-only views ────────────────────────────────────────────
 
@@ -130,26 +138,51 @@ class ShardMap:
 
     # ─── Lifecycle ─────────────────────────────────────────────────────────
 
+    async def __aenter__(self) -> ShardMap:
+        tg = anyio.create_task_group()
+        await tg.__aenter__()
+        self._tg = tg
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self.aclose()
+        tg = self._tg
+        self._tg = None
+        assert tg is not None
+        await tg.__aexit__(exc_type, exc, tb)
+
     async def start(self) -> None:
         """Trigger an initial refresh. Returns once READY or refresh failed."""
         await self._spawn_refresh()
-        task = self._refresh_task
-        if task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        # Wait for the in-flight refresh to finish (READY or cancelled).
+        if self._refresh_in_flight:
+            await self._refresh_done.wait()
 
     async def aclose(self) -> None:
-        """Cancel any background refresh / cleanup task. Idempotent."""
+        """Cancel any background refresh / cleanup task. Idempotent.
+
+        Setting ``_closed`` plus cancelling the per-task cancel scope of the
+        cleanup task is enough; the refresh loop observes ``_closed`` on its
+        next iteration. We deliberately do NOT cancel ``self._tg``'s scope
+        because that would also cancel the caller, which holds the outer
+        ``async with``.
+        """
         self._closed = True
-        if self._cleanup_handle is not None:
-            self._cleanup_handle.cancel()
-            self._cleanup_handle = None
-        task = self._refresh_task
-        if task is not None and not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
-        self._refresh_task = None
+        if self._cleanup_scope is not None:
+            self._cleanup_scope.cancel()
+            self._cleanup_scope = None
+        # Cancel an in-flight refresh task via the dedicated scope, if any.
+        if self._refresh_scope is not None:
+            self._refresh_scope.cancel()
+            self._refresh_scope = None
+        # Unblock any awaiter on start().
+        if not self._refresh_done.is_set():
+            self._refresh_done.set()
 
     # ─── Prediction ────────────────────────────────────────────────────────
 
@@ -210,32 +243,40 @@ class ShardMap:
                 return
             self._state = ShardMapState.UPDATING
             self._backoff = self._min_backoff
-            task = asyncio.create_task(self._refresh_loop())
-            self._refresh_task = task
+            self._refresh_done = anyio.Event()
+            self._refresh_in_flight = True
+            tg = self._tg
+            if tg is None:
+                raise RuntimeError("ShardMap must be used as an async context manager")
+            scope = anyio.CancelScope()
+            self._refresh_scope = scope
+            tg.start_soon(self._refresh_loop, scope)
 
-    async def _refresh_loop(self) -> None:
+    async def _refresh_loop(self, scope: anyio.CancelScope) -> None:
         # Retry forever (until aclose) on transient failures with exponential
         # backoff. State stays UPDATING throughout — callers that want READY
         # await ``start()`` which awaits the first iteration only.
-        while not self._closed:
+        with scope:
             try:
-                snapshot = await self._fetch_all_pages()
-            except Exception:
-                logger.warning(
-                    "shard map refresh failed for stream %r; retrying in %.3fs",
-                    self._stream_name,
-                    self._backoff,
-                    exc_info=True,
-                )
-                backoff = self._backoff
-                self._backoff = min(self._backoff * 2.0, self._max_backoff)
-                try:
-                    await self._sleep_fn(backoff)
-                except asyncio.CancelledError:
+                while not self._closed:
+                    try:
+                        snapshot = await self._fetch_all_pages()
+                    except Exception:
+                        logger.warning(
+                            "shard map refresh failed for stream %r; retrying in %.3fs",
+                            self._stream_name,
+                            self._backoff,
+                            exc_info=True,
+                        )
+                        backoff = self._backoff
+                        self._backoff = min(self._backoff * 2.0, self._max_backoff)
+                        await self._sleep_fn(backoff)
+                        continue
+                    await self._install_snapshot(snapshot)
                     return
-                continue
-            await self._install_snapshot(snapshot)
-            return
+            finally:
+                self._refresh_in_flight = False
+                self._refresh_done.set()
 
     async def _fetch_all_pages(self) -> _Snapshot:
         endings: list[tuple[int, int]] = []
@@ -318,19 +359,24 @@ class ShardMap:
     def _schedule_cleanup(self) -> None:
         if self._closed:
             return
-        if self._cleanup_handle is not None:
-            self._cleanup_handle.cancel()
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:  # pragma: no cover - defensive
+        if self._cleanup_scope is not None:
+            self._cleanup_scope.cancel()
+        tg = self._tg
+        if tg is None:  # pragma: no cover - defensive; install requires entered context
             return
-        self._cleanup_handle = loop.call_later(self._closed_shard_ttl, self._cleanup)
+        scope = anyio.CancelScope()
+        self._cleanup_scope = scope
+        tg.start_soon(self._cleanup_task, scope, self._closed_shard_ttl)
+
+    async def _cleanup_task(self, scope: anyio.CancelScope, delay: float) -> None:
+        with scope:
+            await anyio.sleep(delay)
+            self._cleanup()
 
     def _cleanup(self) -> None:
-        # Purge closed shards whose TTL has expired. Runs on the event loop
-        # via call_later; no lock needed because attribute rebinding is atomic
-        # and we are not pre-empted.
-        self._cleanup_handle = None
+        # Purge closed shards whose TTL has expired. Invoked from the spawned
+        # cleanup task or directly from tests; safe to call repeatedly.
+        self._cleanup_scope = None
         if self._closed or self._state is not ShardMapState.READY:
             return
         now = self._clock()

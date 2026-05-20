@@ -1,7 +1,8 @@
 # Architecture
 
-`aiokpl` implements the same pipeline as the C++ KPL, in idiomatic asyncio
-primitives. The shape is:
+`aiokpl` implements the same pipeline as the C++ KPL, on top of an `anyio`
+task group so the same code runs on both the asyncio and trio runtimes. The
+shape is:
 
 ```
 UserRecord
@@ -68,7 +69,7 @@ the `PutRecords` response, the retrier classifies the outcome and decides
 the next step. See the
 [classification table in CLAUDE.md](https://github.com/juanrojas/aiokpl/blob/main/CLAUDE.md#retrier-classification-the-most-important-code-in-the-library)
 for the full rules. On terminal outcomes (`finish` or `fail`), the
-retrier resolves the user's `asyncio.Future` with a `RecordResult`.
+retrier resolves the user's future with a `RecordResult`.
 
 ## Sequence
 

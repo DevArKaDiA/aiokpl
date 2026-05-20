@@ -8,17 +8,21 @@ synchronously from :meth:`Reducer.add` (limit/predicate trigger) or handed to
 the async ``on_deadline`` callback (timer trigger).
 
 This mirrors ``aws/kinesis/core/reducer.h`` in the C++ KPL with two
-adaptations: the active container is bound to the running asyncio loop, and
-flush packing is FIFO-by-deadline with excess re-injection into a fresh
-active batch — same algorithm, idiomatic primitives.
+adaptations: the deadline timer is implemented as an anyio task spawned in a
+caller-supplied :class:`anyio.abc.TaskGroup`, cancellable via a per-timer
+:class:`anyio.CancelScope`. Flush packing is FIFO-by-deadline with excess
+re-injection into a fresh active batch — same algorithm, idiomatic
+primitives — and the code is backend-agnostic (asyncio and trio both work).
 """
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Generic, Protocol, TypeVar, runtime_checkable
+
+import anyio
+from anyio.abc import TaskGroup
 
 I = TypeVar("I")  # noqa: E741 — protocol convention for input item type
 B = TypeVar("B", bound="Batch")
@@ -55,30 +59,34 @@ class Reducer(Generic[I, B]):
     deadline. On every add the timer is reprogrammed to the batch's current
     earliest deadline; when it fires, a partial batch is closed and dispatched
     to ``on_deadline`` outside the lock.
+
+    The deadline timer is a task spawned in the caller-supplied
+    :class:`anyio.abc.TaskGroup`; cancellation is via a per-timer
+    :class:`anyio.CancelScope`.
     """
 
     def __init__(
         self,
         *,
+        task_group: TaskGroup,
         batch_factory: Callable[[], B],
         count_limit: int,
         size_limit: int,
         on_deadline: Callable[[B], Awaitable[None]],
         flush_predicate: Callable[[I, B], bool] | None = None,
         clock: Callable[[], float] = time.monotonic,
-        loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
+        self._task_group = task_group
         self._batch_factory = batch_factory
         self._count_limit = count_limit
         self._size_limit = size_limit
         self._on_deadline = on_deadline
         self._flush_predicate = flush_predicate
         self._clock = clock
-        self._loop = loop
 
         self._active: B = batch_factory()
-        self._lock = asyncio.Lock()
-        self._timer: asyncio.TimerHandle | None = None
+        self._lock = anyio.Lock()
+        self._timer_scope: anyio.CancelScope | None = None
         self._closed = False
 
     # ─── Public API ────────────────────────────────────────────────────────
@@ -162,9 +170,9 @@ class Reducer(Generic[I, B]):
         return closed_b
 
     def _cancel_timer_locked(self) -> None:
-        if self._timer is not None:
-            self._timer.cancel()
-            self._timer = None
+        if self._timer_scope is not None:
+            self._timer_scope.cancel()
+            self._timer_scope = None
 
     def _reschedule_locked(self) -> None:
         # Defensive: callers gate on count > 0, so the empty-active path here
@@ -175,23 +183,30 @@ class Reducer(Generic[I, B]):
         if active.count == 0:  # pragma: no cover - defensive guard
             return
         delay = max(0.0, active.deadline - self._clock())
-        loop = self._loop if self._loop is not None else asyncio.get_running_loop()
-        self._timer = loop.call_later(delay, self._on_timer_fire)
+        scope = anyio.CancelScope()
+        self._timer_scope = scope
+        self._task_group.start_soon(self._timer_task, scope, delay)
 
-    def _on_timer_fire(self) -> None:
-        # Runs synchronously on the loop. Spawn the async fire path as a task;
-        # the task acquires the lock, packs, and dispatches the callback
-        # outside the lock.
-        self._timer = None
-        if self._closed:
-            return
-        loop = self._loop if self._loop is not None else asyncio.get_running_loop()
-        loop.create_task(self._fire())
+    async def _timer_task(self, scope: anyio.CancelScope, delay: float) -> None:
+        # Sleeping task that fires the deadline-driven flush. Cancellation is
+        # via the per-timer ``scope``; on cancel we exit cleanly without
+        # firing. Reschedules clear ``self._timer_scope`` only when they cancel
+        # the previous scope, so a fired scope leaves the slot pointing at
+        # itself until ``_fire`` clears it.
+        with scope:
+            await anyio.sleep(delay)
+            if self._closed:
+                return
+            await self._fire(scope)
 
-    async def _fire(self) -> None:
+    async def _fire(self, scope: anyio.CancelScope | None = None) -> None:
         async with self._lock:
             if self._closed:
                 return
+            # If a newer reschedule replaced our scope, this fire is stale.
+            if scope is not None and self._timer_scope is not scope:
+                return
+            self._timer_scope = None
             active: Batch[I] = self._active  # type: ignore[assignment]
             if active.count == 0:
                 return

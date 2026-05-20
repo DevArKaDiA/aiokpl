@@ -15,15 +15,22 @@ Size estimation follows the C++ ``KinesisRecord::accurate_size`` /
 proto framing overhead plus deduped partition-key / explicit-hash-key
 references (see ``kinesis_record.cc:145-173``). A fully accurate size is only
 needed at serialization time, which the consumer obtains via :meth:`to_blob`.
+
+Lifecycle is structured: enter the :class:`Aggregator` as an async context
+manager, which spawns an internal :class:`anyio.abc.TaskGroup` shared by
+every per-shard :class:`Reducer`.
 """
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from types import TracebackType
 from typing import Protocol, runtime_checkable
+
+import anyio
+from anyio.abc import TaskGroup
 
 from aiokpl.aggregation import UserRecord, encode_aggregated
 from aiokpl.hashing import md5_hash_key, parse_explicit_hash_key
@@ -152,6 +159,10 @@ class Aggregator:
     when the predicted shard falls outside the cached range, and as the only
     reducer when aggregation is globally disabled (in which case its
     ``count_limit`` is 1 — every record flushes as its own batch).
+
+    Enter via ``async with Aggregator(...) as agg:``. The internal
+    :class:`anyio.abc.TaskGroup` is shared with every per-shard
+    :class:`Reducer`.
     """
 
     def __init__(
@@ -174,8 +185,29 @@ class Aggregator:
         self._clock = clock
 
         self._reducers: dict[int | None, Reducer[_BufferedRecord, AggregatedBatch]] = {}
-        self._lock = asyncio.Lock()
+        self._lock = anyio.Lock()
         self._closed = False
+        self._tg: TaskGroup | None = None
+
+    # ─── Lifecycle ─────────────────────────────────────────────────────────
+
+    async def __aenter__(self) -> Aggregator:
+        tg = anyio.create_task_group()
+        await tg.__aenter__()
+        self._tg = tg
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self.aclose()
+        tg = self._tg
+        self._tg = None
+        assert tg is not None
+        await tg.__aexit__(exc_type, exc, tb)
 
     # ─── Public API ────────────────────────────────────────────────────────
 
@@ -242,7 +274,11 @@ class Aggregator:
             async def on_deadline(batch: AggregatedBatch) -> None:
                 await self._on_batch_ready(batch)
 
+            tg = self._tg
+            if tg is None:
+                raise RuntimeError("Aggregator must be used as an async context manager")
             reducer: Reducer[_BufferedRecord, AggregatedBatch] = Reducer(
+                task_group=tg,
                 batch_factory=factory,
                 count_limit=self._max_count,
                 size_limit=self._max_size,

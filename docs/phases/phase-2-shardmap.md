@@ -59,7 +59,8 @@ When a refresh produces a new snapshot, shards that **disappeared** are
 not deleted immediately — they are kept in the snapshot for
 `closed_shard_ttl` (default 60 s) so that `hashrange()` still answers for
 records that were already in flight when the split landed. After the TTL
-expires, a `call_later` cleanup purges them.
+expires, a sleeping task spawned in the `ShardMap`'s `anyio.TaskGroup`
+purges them.
 
 ## Transport-agnostic injection
 
@@ -69,13 +70,13 @@ In tests it is a hand-written async function returning canned `ListShards`
 responses. The `ShardMap` itself never imports `aiobotocore`.
 
 ```python
-shard_map = ShardMap(
+async with ShardMap(
     stream_name="my-stream",
     list_shards_fn=client.list_shards,  # or a fake in tests
     closed_shard_ttl=60.0,
-)
-await shard_map.start()
-shard_id = shard_map.predict(md5_hash_key("user-123"))
+) as shard_map:
+    await shard_map.start()
+    shard_id = shard_map.predict(md5_hash_key("user-123"))
 ```
 
 This is also why the integration tests can target `etspaceman/kinesis-mock`

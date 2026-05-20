@@ -49,8 +49,10 @@ Every record carries a deadline; every stage flushes on the earliest one;
 size limits exist only to avoid an outright `PutRecords` rejection.
 
 !!! info "Implication"
-    The reducer fires on `loop.call_later(deadline)`, not on a size threshold.
-    Size is a short-circuit, not a trigger.
+    The reducer fires on a deadline-driven task spawned in an `anyio.TaskGroup`,
+    not on a size threshold. Size is a short-circuit, not a trigger.
+    Structured concurrency is enforced everywhere: every background task is
+    owned by a parent task group and lives only as long as its component.
 
 ## 4. Each stage has one responsibility and one downstream callback
 

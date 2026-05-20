@@ -112,6 +112,7 @@ nav:
   - Development:
       - Setup: dev/setup.md
       - Testing: dev/testing.md
+      - Why anyio: dev/anyio.md
       - Releasing: dev/releasing.md
 
 extra:

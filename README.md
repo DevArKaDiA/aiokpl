@@ -73,7 +73,9 @@ The full design rationale lives in [`CLAUDE.md`](./CLAUDE.md).
 
 ### What v0.1 will do
 
-- **Async-first API** built on `asyncio` and `aiobotocore`.
+- **Backend-agnostic**: works on both `asyncio` and `trio` via `anyio`.
+- **Async-first API** built on `anyio` and (for the network layer)
+  `aiobotocore`.
 - **Byte-exact KPL aggregation** on the wire — KCL consumers deaggregate
   transparently.
 - **Shard prediction** via `md5(partition_key)` + cached `ListShards`, O(log N)

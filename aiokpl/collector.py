@@ -6,6 +6,10 @@ Mirrors ``aws/kinesis/core/collector.h`` in the C++ KPL: a single
 share exceeds 256 KiB. Combined with the 500-record and 5 MiB hard caps
 imposed by the Kinesis ``PutRecords`` API, this keeps per-shard latency
 bounded even under skewed write patterns.
+
+Lifecycle is structured: enter the :class:`Collector` as an async context
+manager, which spawns an internal :class:`anyio.abc.TaskGroup` used by its
+single :class:`Reducer`.
 """
 
 from __future__ import annotations
@@ -13,6 +17,10 @@ from __future__ import annotations
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from types import TracebackType
+
+import anyio
+from anyio.abc import TaskGroup
 
 from aiokpl.aggregator import AggregatedBatch
 from aiokpl.reducer import Reducer
@@ -79,31 +87,65 @@ class Collector:
     ) -> None:
         self._on_batch_ready = on_batch_ready
         self._threshold = per_shard_short_circuit_bytes
+        self._collection_max_count = collection_max_count
+        self._collection_max_size = collection_max_size
+        self._clock = clock
+
+        self._reducer: Reducer[AggregatedBatch, PutRecordsBatch] | None = None
+        self._tg: TaskGroup | None = None
+
+    # ─── Lifecycle ─────────────────────────────────────────────────────────
+
+    async def __aenter__(self) -> Collector:
+        tg = anyio.create_task_group()
+        await tg.__aenter__()
+        self._tg = tg
 
         def predicate(just_added: AggregatedBatch, current: PutRecordsBatch) -> bool:
             return current.per_shard_bytes(just_added.predicted_shard) >= self._threshold
 
-        self._reducer: Reducer[AggregatedBatch, PutRecordsBatch] = Reducer(
+        self._reducer = Reducer(
+            task_group=tg,
             batch_factory=PutRecordsBatch,
-            count_limit=collection_max_count,
-            size_limit=collection_max_size,
-            on_deadline=on_batch_ready,
+            count_limit=self._collection_max_count,
+            size_limit=self._collection_max_size,
+            on_deadline=self._on_batch_ready,
             flush_predicate=predicate,
-            clock=clock,
+            clock=self._clock,
         )
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self.aclose()
+        tg = self._tg
+        self._tg = None
+        assert tg is not None
+        await tg.__aexit__(exc_type, exc, tb)
+
+    # ─── Public API ────────────────────────────────────────────────────────
 
     async def put(self, batch: AggregatedBatch) -> None:
+        if self._reducer is None:
+            raise RuntimeError("Collector must be used as an async context manager")
         closed = await self._reducer.add(batch)
         if closed is not None:
             await self._on_batch_ready(closed)
 
     async def flush(self) -> None:
+        if self._reducer is None:
+            raise RuntimeError("Collector must be used as an async context manager")
         closed = await self._reducer.flush()
         if closed is not None:
             await self._on_batch_ready(closed)
 
     async def aclose(self) -> None:
-        await self._reducer.aclose()
+        if self._reducer is not None:
+            await self._reducer.aclose()
 
 
 __all__ = ["Collector", "PutRecordsBatch"]

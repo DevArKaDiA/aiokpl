@@ -1,5 +1,25 @@
 # Testing
 
+## Backend matrix
+
+`aiokpl` uses `anyio` for all async primitives, so the same code runs on
+both the `asyncio` and `trio` runtimes. The test suite enforces this: the
+top-level `tests/conftest.py` declares a parametrized `anyio_backend`
+fixture and an auto-mark hook that decorates every async test with
+`pytest.mark.anyio`. As a result, every async test runs **twice** — once
+on asyncio and once on trio — and coverage is the union of both passes.
+
+Writing a new async test takes nothing special:
+
+```python
+async def test_my_thing() -> None:
+    async with anyio.create_task_group() as tg:
+        ...
+```
+
+The marker is added automatically; the parametrized fixture supplies the
+backend.
+
 ## Markers
 
 Tests are split by `pytest` marker:

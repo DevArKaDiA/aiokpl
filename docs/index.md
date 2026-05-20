@@ -52,6 +52,8 @@ ideas in a language where you do not need a daemon.
 - **Each stage has one responsibility and one downstream callback.**
 - **Failures are data, not exceptions.**
 - **Bounded latency beats maximum throughput.**
+- **Backend-agnostic**: built on `anyio`, so the same code runs on both
+  `asyncio` and `trio`.
 
 See [Philosophy](philosophy.md) for the full rationale.
 

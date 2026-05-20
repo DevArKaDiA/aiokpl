@@ -18,17 +18,21 @@ The drain pattern is deliberate:
   opportunistically drains its own shard to avoid one-tick latency when
   tokens are already available.
 
-Per the Reducer playbook, async callbacks fire *outside* the lock.
+Lifecycle is structured: enter the :class:`Limiter` as an async context
+manager, which spawns an internal :class:`anyio.abc.TaskGroup` hosting the
+background drain task.
 """
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from types import TracebackType
 from typing import Protocol, runtime_checkable
 
+import anyio
+from anyio.abc import TaskGroup
 from sortedcontainers import SortedKeyList
 
 from aiokpl.aggregator import AggregatedBatch
@@ -149,7 +153,8 @@ class Limiter:
 
     Owns one :class:`ShardLimiter` per predicted shard plus a catch-all for
     ``None``. Spawns the drain task lazily on first :meth:`put` so users
-    don't have to call a ``start()`` method.
+    don't have to call a ``start()`` method, but the :class:`Limiter` must be
+    entered as an async context manager so the internal task group exists.
     """
 
     def __init__(
@@ -162,7 +167,6 @@ class Limiter:
         expiration_ms: float = DEFAULT_EXPIRATION_MS,
         drain_interval_ms: float = DEFAULT_DRAIN_INTERVAL_MS,
         clock: Callable[[], float] = time.monotonic,
-        loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
         self._on_admit = on_admit
         self._on_expired = on_expired
@@ -171,12 +175,33 @@ class Limiter:
         self._expiration = expiration_ms / 1000.0
         self._drain_interval = drain_interval_ms / 1000.0
         self._clock = clock
-        self._loop = loop
 
         self._shards: dict[int | None, ShardLimiter] = {}
-        self._lock = asyncio.Lock()
-        self._drain_task: asyncio.Task[None] | None = None
+        self._lock = anyio.Lock()
+        self._drain_started = False
+        self._drain_scope: anyio.CancelScope | None = None
         self._closed = False
+        self._tg: TaskGroup | None = None
+
+    # ─── Lifecycle ─────────────────────────────────────────────────────────
+
+    async def __aenter__(self) -> Limiter:
+        tg = anyio.create_task_group()
+        await tg.__aenter__()
+        self._tg = tg
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self.aclose()
+        tg = self._tg
+        self._tg = None
+        assert tg is not None
+        await tg.__aexit__(exc_type, exc, tb)
 
     # ─── Public API ────────────────────────────────────────────────────────
 
@@ -200,9 +225,14 @@ class Limiter:
             expires_at = self._clock() + self._expiration
             limiter.enqueue(batch, expires_at)
             admitted, expired = limiter.drain()
-            if self._drain_task is None and not self._closed:
-                loop = self._loop if self._loop is not None else asyncio.get_running_loop()
-                self._drain_task = loop.create_task(self._drain_loop())
+            if not self._drain_started and not self._closed:
+                tg = self._tg
+                if tg is None:
+                    raise RuntimeError("Limiter must be used as an async context manager")
+                scope = anyio.CancelScope()
+                self._drain_scope = scope
+                self._drain_started = True
+                tg.start_soon(self._drain_loop, scope)
         await self._dispatch(admitted, expired)
 
     async def flush(self) -> None:
@@ -225,27 +255,25 @@ class Limiter:
             if self._closed:
                 return
             self._closed = True
-            task = self._drain_task
-            self._drain_task = None
-        if task is not None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            scope = self._drain_scope
+            self._drain_scope = None
+        if scope is not None:
+            scope.cancel()
 
     # ─── Internals ─────────────────────────────────────────────────────────
 
-    async def _drain_loop(self) -> None:
-        # Cancellation is the sole exit path — ``aclose`` cancels this task
-        # under the lock, so the next ``async with self._lock`` raises
-        # CancelledError and unwinds cleanly.
-        try:
+    async def _drain_loop(self, scope: anyio.CancelScope) -> None:
+        # Cancellation is the sole exit path — ``aclose`` cancels the scope
+        # owning this task. We also bail out cleanly on observing ``_closed``
+        # inside the lock so a racing ``aclose`` doesn't trigger spurious
+        # dispatch.
+        with scope:
             while True:
-                await asyncio.sleep(self._drain_interval)
+                await anyio.sleep(self._drain_interval)
                 async with self._lock:
                     collected = [limiter.drain() for limiter in self._shards.values()]
                 for admitted, expired in collected:
                     await self._dispatch(admitted, expired)
-        except asyncio.CancelledError:
-            return
 
     async def _dispatch(
         self,

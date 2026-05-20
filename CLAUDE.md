@@ -67,16 +67,16 @@ Translation table:
 |---|---|
 | `KinesisProducer` (root) | `Producer` class, `async with` lifecycle |
 | `Pipeline` per stream | `_StreamPipeline` per stream, lazy-created in a dict |
-| `Aggregator` + `Reducer<UR, KR>` | `Aggregator` with per-shard `_Batch` + deadline `call_later` |
+| `Aggregator` + `Reducer<UR, KR>` | `Aggregator` with per-shard `_Batch` + deadline task in an anyio TaskGroup |
 | `Limiter` + `TokenBucket` | `Limiter` with per-shard `TokenBucket` (records+bytes streams) |
 | `Collector` + `Reducer<KR, PRR>` | `Collector` with deadline + 256 KiB/shard predicate |
 | `ShardMap` (binary search) | `ShardMap` with `bisect_left` on `end_hash_key` |
 | `Retrier::handle_put_records_result` | `Retrier.handle(outcome)` |
 | `UserRecord::to_put_record_result` | `RecordResult` dataclass |
 | `Attempt` | `Attempt` dataclass |
-| `IoServiceExecutor` | the asyncio event loop |
-| `ConcurrentHashMap` (lazy factory) | `defaultdict` under an `asyncio.Lock`, or `setdefault` |
-| `TicketSpinLock`, `ConcurrentLinkedQueue` | `asyncio.Queue`, `asyncio.Lock` |
+| `IoServiceExecutor` | `anyio.abc.TaskGroup` owned by each stage |
+| `ConcurrentHashMap` (lazy factory) | `defaultdict` under an `anyio.Lock`, or `setdefault` |
+| `TicketSpinLock`, `ConcurrentLinkedQueue` | `anyio.Lock` + memory-object streams |
 | `TimeSensitiveQueue` (boost multi_index) | `sortedcontainers.SortedKeyList` on deadline |
 | `TimeSensitive` mixin | `deadline: float` + `expiration: float` fields |
 | IPC + Protobuf framing | **dropped** — we are in-process |
@@ -88,6 +88,11 @@ Translation table:
 
 ## Locked decisions (don't relitigate)
 
+- **Async runtime is `anyio`.** Works on both `asyncio` and `trio` backends.
+  Every stage (`Reducer`, `Aggregator`, `Collector`, `ShardMap`, `Limiter`)
+  is an `async with` async context manager that owns an internal
+  `anyio.abc.TaskGroup`. The test suite parametrizes the `anyio_backend`
+  fixture across `asyncio` and `trio`, so every async test runs twice.
 - **Protobuf codec is hand-rolled.** No `protobuf` dep, no `protoc` build step,
   no vendored `aws-kinesis-agg`. The KPL aggregation schema has 3 messages and
   ~7 fields total; wire format is varints + length-delimited. ~150 lines of
@@ -208,18 +213,26 @@ record in the batch with `"Record Count Mismatch"`. Don't try to be clever.
 
 ## Concurrency model
 
-Single asyncio event loop owns the producer. Public API is async. Sync users
-get a thin bridge (`Producer.sync()` returning a wrapper that does
-`run_coroutine_threadsafe`).
+The producer runs on `anyio`, so the same code drives either the asyncio or
+trio runtime. Public API is async. Sync users get a thin bridge
+(`Producer.sync()`) when Phase 8 ships.
 
-- All stage methods are `async def` and protected by `asyncio.Lock` where
-  shared state is touched.
-- No background OS threads except the one running the loop, if any. We do not
-  spawn threads from inside the library.
+- Every stage is entered via `async with` and owns an internal
+  `anyio.abc.TaskGroup`. Background tasks (timer, drain loop, refresh,
+  cleanup) are spawned into that group and live exactly as long as the
+  stage.
+- All stage methods are `async def` and protected by `anyio.Lock` where
+  shared state is touched. Per-task `anyio.CancelScope` instances cancel
+  individual timers without taking down siblings.
+- No background OS threads, except those spawned through
+  `anyio.to_thread.run_sync` (used in integration tests to bridge sync
+  boto3 calls).
 - `aiobotocore` calls run as awaited tasks; their `done_callback` does **not**
   call the retrier directly — it enqueues an internal item the retrier task
   pulls from. (This mirrors the C++ note in `pipeline.h:206` about not
-  hammering downstream from SDK callback threads.)
+  hammering downstream from SDK callback threads.) Note that `aiobotocore`
+  is asyncio-only, so the Sender/Retrier (Phase 5+) loses trio support,
+  but Phase 4 and below remain backend-agnostic.
 
 ---
 
