@@ -16,11 +16,12 @@ ecosystem has never had a real KPL — only:
   retries, none of them carry a per-record attempt history back to the
   caller.
 
-`aiokpl` is a clean-room reimplementation in idiomatic `asyncio` Python that
-preserves what is worth preserving from the C++ KPL — shard-aware pipeline,
-deadline-driven batching, smart retry classification, byte-exact aggregation
-— and drops what was an accident of C++: IPC, named pipes, child process,
-custom spinlocks, static binaries, packaging hell.
+`aiokpl` is a clean-room reimplementation in idiomatic async Python — built
+on `anyio` so the same code runs on both the `asyncio` and `trio` runtimes
+— that preserves what is worth preserving from the C++ KPL (shard-aware
+pipeline, deadline-driven batching, smart retry classification, byte-exact
+aggregation) and drops what was an accident of C++: IPC, named pipes, child
+process, custom spinlocks, static binaries, packaging hell.
 
 It is not a wrapper around the C++ binary. It is a reimplementation of its
 ideas in a language where you do not need a daemon.
@@ -59,9 +60,9 @@ equivalent.
 The C++ KPL exists because in 2015 Python did not have `asyncio`, AWS SDKs
 did not have async clients, and writing a shard-aware concurrent producer
 in CPython was painful. None of those things are true in 2026. `aiobotocore`
-gives us non-blocking AWS calls, `asyncio` gives us cheap concurrency, and
-modern Python gives us the type system and dataclasses we need to express
-the pipeline cleanly.
+gives us non-blocking AWS calls, `anyio` gives us cheap concurrency that
+runs on both `asyncio` and `trio` backends, and modern Python gives us the
+type system and dataclasses we need to express the pipeline cleanly.
 
 The C++ KPL is a 30k-line C++ program plus a Java sidecar that spawns it as
 a subprocess and talks to it over a named pipe. `aiokpl` aims for roughly

@@ -35,8 +35,9 @@ format. None of them give you what the C++ KPL gives you: shard-aware
 batching, deadline-driven flushes, smart retry classification, and per-record
 attempt history.
 
-`aiokpl` is a clean-room reimplementation of those ideas in idiomatic
-`asyncio` Python. It preserves what was worth preserving (shard-aware
+`aiokpl` is a clean-room reimplementation of those ideas in idiomatic async
+Python, built on `anyio` so the same code runs on both the `asyncio` and
+`trio` runtimes. It preserves what was worth preserving (shard-aware
 pipeline, deadline-driven batching, byte-exact aggregation) and drops what
 was an accident of being written in C++ (IPC, named pipes, child process,
 custom spinlocks, static binaries, packaging hell).
@@ -60,7 +61,7 @@ See [Philosophy](philosophy.md) for the full rationale.
 ## Get started
 
 ```python
-import asyncio
+import anyio
 from aiokpl import Producer, Config
 
 async def main():
@@ -83,7 +84,7 @@ async def main():
         else:
             print("failed:", result.attempts[-1].error_code)
 
-asyncio.run(main())
+anyio.run(main)  # works on asyncio (default) or pass backend="trio"
 ```
 
 !!! info "The `Producer` class is Phase 6"

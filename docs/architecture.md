@@ -18,7 +18,7 @@ Sender       ──► aiobotocore.put_records (async)
    ▼
 Retrier      ──► classify outcome (throttle / transient / wrong-shard / expired)
    ▼
-finish_user_record  →  resolves the user's asyncio.Future
+finish_user_record  →  resolves the user's awaitable future
 ```
 
 For the full C++ ↔ Python mapping table, see

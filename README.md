@@ -45,7 +45,8 @@ has never had a real KPL — only:
 - `kiner`, `kinesis-python`, `kinesis-producer` (ludia) — abandoned community
   attempts. All thin batchers over boto3.
 
-`aiokpl` is a clean-room reimplementation in idiomatic `asyncio` Python that
+`aiokpl` is a clean-room reimplementation in idiomatic async Python — built
+on `anyio` so the same code runs on both `asyncio` and `trio` — that
 **preserves what's worth preserving from the C++ KPL** (shard-aware pipeline,
 deadline-driven batching, smart retry classification, byte-exact aggregation)
 and **drops what was an accident of C++** (IPC, named pipes, child process,
@@ -104,7 +105,7 @@ The full design rationale lives in [`CLAUDE.md`](./CLAUDE.md).
 ## Intended usage
 
 ```python
-import asyncio
+import anyio
 from aiokpl import Producer, Config
 
 async def main():
@@ -127,12 +128,12 @@ async def main():
         else:
             print("failed:", result.attempts[-1].error_code)
 
-asyncio.run(main())
+anyio.run(main)  # works on asyncio (default) or pass backend="trio"
 ```
 
-`put_record()` returns an `asyncio.Future[RecordResult]`. The future resolves
-when the record reaches a terminal state — success or final failure. The
-`attempts` list always carries the full retry history.
+`put_record()` returns an awaitable future. It resolves when the record
+reaches a terminal state — success or final failure — and the `attempts`
+list always carries the full retry history.
 
 ---
 
@@ -152,10 +153,10 @@ Sender       ──► aiobotocore.put_records (async)
    ▼
 Retrier      ──► classify outcome (throttle / transient / wrong-shard / expired)
    ▼
-finish_user_record  →  resolves the user's asyncio.Future
+finish_user_record  →  resolves the user's awaitable future
 ```
 
-Same pipeline as the C++ KPL, in idiomatic asyncio primitives. See
+Same pipeline as the C++ KPL, in idiomatic anyio primitives. See
 [`CLAUDE.md`](./CLAUDE.md#mapping-c--python) for the C++↔Python translation
 table.
 
@@ -210,7 +211,7 @@ Phased on purpose. Each phase ships something testable on its own.
 
 ### Phase 8 — Sync bridge (optional)
 
-- `Producer.sync()` for non-asyncio callers.
+- `Producer.sync()` for synchronous callers (no async runtime required).
 
 ---
 

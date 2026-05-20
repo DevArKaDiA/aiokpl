@@ -37,5 +37,5 @@ predecessors are green.
   pipelines, graceful shutdown, backpressure semaphore.
 - **Phase 7 — Metrics (optional).** CloudWatch counters per
   (stream, shard, name).
-- **Phase 8 — Sync bridge (optional).** Thin wrapper for non-asyncio
-  callers.
+- **Phase 8 — Sync bridge (optional).** Thin wrapper for synchronous
+  callers (no async runtime required).
