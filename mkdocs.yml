@@ -1,0 +1,120 @@
+site_name: aiokpl
+site_description: Pure-Python async Kinesis producer. KPL-equivalent without a native daemon.
+site_url: https://juanrojas.github.io/aiokpl/
+repo_url: https://github.com/juanrojas/aiokpl
+repo_name: juanrojas/aiokpl
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: en
+  logo: null
+  icon:
+    logo: octicons/zap-16
+    repo: octicons/git-commit-16
+  font:
+    text: Inter
+    code: JetBrains Mono
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - toc.follow
+    - toc.integrate
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tooltips
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_div_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+  - pymdownx.caret
+  - pymdownx.mark
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - scripts/gen_ref_pages.py
+  - literate-nav:
+      nav_file: SUMMARY.md
+  - section-index
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_root_heading: true
+            show_root_full_path: false
+            show_source: true
+            show_signature_annotations: true
+            separate_signature: true
+            merge_init_into_class: true
+            members_order: source
+            filters:
+              - "!^_"
+
+nav:
+  - Home: index.md
+  - Why aiokpl: why.md
+  - Philosophy: philosophy.md
+  - Architecture: architecture.md
+  - Aggregation format: aggregation-format.md
+  - Phases:
+      - Roadmap: phases/index.md
+      - Phase 1 — Codec: phases/phase-1-codec.md
+      - Phase 2 — ShardMap: phases/phase-2-shardmap.md
+  - API reference: reference/
+  - Development:
+      - Setup: dev/setup.md
+      - Testing: dev/testing.md
+      - Releasing: dev/releasing.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/juanrojas/aiokpl

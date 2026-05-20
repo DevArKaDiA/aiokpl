@@ -6,6 +6,8 @@
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
+**📚 [Documentation](https://juanrojas.github.io/aiokpl/)**
+
 **Pure-Python async Kinesis producer. KPL-equivalent without a native daemon.**
 
 > A library that respects the shard as the unit of optimization, measures time

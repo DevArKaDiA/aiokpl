@@ -60,6 +60,20 @@ def typecheck(session: nox.Session) -> None:
 
 
 @nox.session(python="3.12")
+def docs(session: nox.Session) -> None:
+    """Build the documentation site with mkdocs --strict."""
+    session.install("-e", ".[docs]")
+    session.run("mkdocs", "build", "--strict")
+
+
+@nox.session(python="3.12", name="docs-serve")
+def docs_serve(session: nox.Session) -> None:
+    """Serve the documentation site locally with autoreload."""
+    session.install("-e", ".[docs]")
+    session.run("mkdocs", "serve", "--dev-addr=127.0.0.1:8000")
+
+
+@nox.session(python="3.12")
 def coverage(session: nox.Session) -> None:
     """Combine partial coverage data and enforce the 100% gate."""
     session.install("-e", ".[test]")
