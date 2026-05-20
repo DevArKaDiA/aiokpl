@@ -108,6 +108,7 @@ nav:
       - Roadmap: phases/index.md
       - Phase 1 — Codec: phases/phase-1-codec.md
       - Phase 2 — ShardMap: phases/phase-2-shardmap.md
+      - Phase 5 — Sender + Retrier: phases/phase-5-sender-retrier.md
   - API reference: reference/
   - Development:
       - Setup: dev/setup.md

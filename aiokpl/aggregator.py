@@ -35,6 +35,7 @@ from anyio.abc import TaskGroup
 from aiokpl.aggregation import UserRecord, encode_aggregated
 from aiokpl.hashing import md5_hash_key, parse_explicit_hash_key
 from aiokpl.reducer import Reducer
+from aiokpl.result import Attempt
 from aiokpl.shard_map import ShardMapState
 
 
@@ -62,11 +63,20 @@ _INDEX_REFERENCE = 2
 
 @dataclass(slots=True)
 class _BufferedRecord:
-    """A :class:`UserRecord` decorated with arrival metadata for the Reducer."""
+    """A :class:`UserRecord` decorated with arrival metadata for the Reducer.
+
+    ``arrival_time`` is set when the record first enters the producer and is
+    NEVER reset on retry — the Retrier compares it against ``record_ttl_ms`` to
+    decide whether a record has expired. ``attempts`` accumulates one entry per
+    Sender trip and is mutated across retries; the terminal :class:`RecordResult`
+    snapshots it as an immutable tuple.
+    """
 
     user_record: UserRecord
     deadline: float
     hash_key: int
+    arrival_time: float = 0.0
+    attempts: list[Attempt] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -223,16 +233,27 @@ class Aggregator:
         else:
             hash_key = md5_hash_key(user_record.partition_key)
 
-        if self._shard_map.state is ShardMapState.READY:
-            predicted = self._shard_map.predict(hash_key)
-        else:
-            predicted = None
-
+        now = self._clock()
         buffered = _BufferedRecord(
             user_record=user_record,
-            deadline=self._clock() + self._buffered_time,
+            deadline=now + self._buffered_time,
             hash_key=hash_key,
+            arrival_time=now,
         )
+        await self.put_buffered(buffered)
+
+    async def put_buffered(self, buffered: _BufferedRecord) -> None:
+        """Re-entry point used by the Retrier to re-enqueue a record.
+
+        The buffered record keeps its accumulated :class:`Attempt` history and
+        its original ``arrival_time`` so the absolute TTL is honoured across
+        retries. The predicted shard may differ from the previous attempt
+        because the cached :class:`ShardMap` may have refreshed in between.
+        """
+        if self._shard_map.state is ShardMapState.READY:
+            predicted = self._shard_map.predict(buffered.hash_key)
+        else:
+            predicted = None
 
         reducer = await self._get_or_create_reducer(predicted)
         closed = await reducer.add(buffered)

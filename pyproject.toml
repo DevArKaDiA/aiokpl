@@ -25,9 +25,12 @@ classifiers = [
 ]
 # Runtime deps are added incrementally per phase. Phase 1 (codec) has ZERO
 # runtime deps — protobuf wire format is hand-rolled. Phase 4 adds
-# sortedcontainers (Limiter's deadline-ordered per-shard queue). Phase 5+
-# will add aiobotocore.
+# sortedcontainers (Limiter's deadline-ordered per-shard queue). Phase 5
+# adds aiobotocore (Sender talks to Kinesis at runtime, so this is no
+# longer integration-only). aiobotocore is asyncio-only — Sender/Retrier
+# lose trio support; Phase 4 and below stay backend-agnostic.
 dependencies = [
+  "aiobotocore>=2.13",
   "anyio>=4",
   "sortedcontainers>=2.4",
 ]
@@ -42,10 +45,10 @@ test = [
 integration = [
   # Integration backend is etspaceman/kinesis-mock (same Scala backend
   # LocalStack uses for Kinesis). Floci was replaced because it does not
-  # honor hash-key routing or ListShards pagination.
+  # honor hash-key routing or ListShards pagination. aiobotocore is now a
+  # runtime dep — see [project.dependencies].
   "docker>=7",
   "urllib3>=2",
-  "aiobotocore>=2.13",
 ]
 lint = [
   "ruff>=0.6",

@@ -14,6 +14,9 @@ from aiokpl.collector import Collector, PutRecordsBatch
 from aiokpl.hashing import md5_hash_key, parse_explicit_hash_key
 from aiokpl.limiter import Limiter, ShardLimiter
 from aiokpl.reducer import Batch, Batchable, Reducer
+from aiokpl.result import Attempt, RecordResult
+from aiokpl.retrier import Retrier
+from aiokpl.sender import PerRecordOutcome, Sender, SendOutcome
 from aiokpl.shard_map import Shard, ShardMap, ShardMapState
 from aiokpl.token_bucket import TokenBucket
 
@@ -21,13 +24,19 @@ __all__ = [
     "MAGIC",
     "AggregatedBatch",
     "Aggregator",
+    "Attempt",
     "Batch",
     "Batchable",
     "Collector",
     "DecodedRecord",
     "Limiter",
+    "PerRecordOutcome",
     "PutRecordsBatch",
+    "RecordResult",
     "Reducer",
+    "Retrier",
+    "SendOutcome",
+    "Sender",
     "Shard",
     "ShardLimiter",
     "ShardMap",
