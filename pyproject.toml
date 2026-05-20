@@ -24,9 +24,12 @@ classifiers = [
   "Typing :: Typed",
 ]
 # Runtime deps are added incrementally per phase. Phase 1 (codec) has ZERO
-# runtime deps — protobuf wire format is hand-rolled. Phase 2+ will add
-# aiobotocore, sortedcontainers, etc.
-dependencies = []
+# runtime deps — protobuf wire format is hand-rolled. Phase 4 adds
+# sortedcontainers (Limiter's deadline-ordered per-shard queue). Phase 5+
+# will add aiobotocore.
+dependencies = [
+  "sortedcontainers>=2.4",
+]
 
 [project.optional-dependencies]
 test = [
