@@ -26,9 +26,9 @@ See the [Roadmap](#roadmap) below for what's coming.
 | 1 | Aggregation codec (KPL wire format) | ✅ Done |
 | 2 | ShardMap + prediction | ✅ Done |
 | 3 | Reducer, Aggregator, Collector | ✅ Done |
-| 4 | Limiter + TokenBucket | 🚧 Next |
-| 5 | Sender + Retrier | ⏳ Planned |
-| 6 | Producer + lifecycle (first usable release: **v0.1**) | ⏳ Planned |
+| 4 | Limiter + TokenBucket | ✅ Done |
+| 5 | Sender + Retrier | ✅ Done |
+| 6 | Producer + lifecycle (first usable release: **v0.1**) | 🚧 Next |
 | 7 | CloudWatch metrics | 💤 Optional |
 | 8 | Sync bridge | 💤 Optional |
 
