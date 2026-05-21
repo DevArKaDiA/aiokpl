@@ -170,21 +170,21 @@ table.
 
 Phased on purpose. Each phase ships something testable on its own.
 
-### Phase 1 — Aggregation codec  🚧 next
+### Phase 1 — Aggregation codec ✅
 
 - `aiokpl/aggregation.py`: encode/decode the KPL aggregated record format.
 - `aiokpl/hashing.py`: partition-key → 128-bit hash, explicit hash key parsing.
 - Conformance tests against `aws-kinesis-agg` and golden bytes captured from
   the C++ KPL.
 
-### Phase 2 — ShardMap
+### Phase 2 — ShardMap ✅
 
 - Async refresh, state machine, `bisect_left` lookup, `invalidate()` from the
   retrier, exponential backoff (1s → 30s), background cleanup of closed shards
   after 60s.
 - Tests with `moto` for `ListShards` paginated.
 
-### Phase 3 — Reducer, Aggregator, Collector
+### Phase 3 — Reducer, Aggregator, Collector ✅
 
 - Generic deadline-driven batcher (`reducer.py`) — the core abstraction reused
   twice.
@@ -193,23 +193,23 @@ Phased on purpose. Each phase ships something testable on its own.
 - `collector.py` produces `PutRecords` batches with the 256 KiB/shard
   short-circuit.
 
-### Phase 4 — Limiter + TokenBucket
+### Phase 4 — Limiter + TokenBucket ✅
 
 - `token_bucket.py`: multi-stream, query-on-demand growth, no sleep.
 - `limiter.py`: per-shard `ShardLimiter` with a 25 ms drain loop.
 
-### Phase 5 — Sender + Retrier
+### Phase 5 — Sender + Retrier ✅
 
 - Glue to `aiobotocore.put_records`.
 - The full classification table — every row covered in unit tests, including
   wrong-shard-after-split.
 
-### Phase 6 — Producer + lifecycle  →  **v0.1 release**
+### Phase 6 — Producer + lifecycle  →  **v0.1 release** ✅
 
 - Per-stream pipeline wiring, graceful shutdown, backpressure semaphore,
   configurable knobs.
 
-### Phase 7 — CloudWatch metrics (optional)
+### Phase 7 — CloudWatch metrics (optional)  🚧 next
 
 - Per-shard / per-stream / global counters, periodic upload.
 
