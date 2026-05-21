@@ -33,8 +33,8 @@ Not on PyPI yet — install via the repo URL.
 | 4 | Limiter + TokenBucket | ✅ Done |
 | 5 | Sender + Retrier | ✅ Done |
 | 6 | Producer + lifecycle (first usable release: **v0.1**) | ✅ Done |
-| 7 | CloudWatch metrics | 💤 Optional |
-| 8 | Sync bridge | 💤 Optional |
+| 7 | CloudWatch metrics (opt-in, default off) | ✅ Done |
+| 8 | Sync bridge | 🚧 Next |
 
 ---
 
@@ -96,9 +96,15 @@ The full design rationale lives in [`CLAUDE.md`](./CLAUDE.md).
 - **Bounded backpressure** via `max_outstanding_records`.
 - **Graceful shutdown** via `async with` + `flush()`.
 
+### Phase 7 highlights
+
+- **Opt-in CloudWatch metrics** via `Config.metrics_level`. Default off,
+  zero overhead. Two levels: `SUMMARY` (stream-only) or `DETAILED`
+  (stream + shard + error code). Periodic upload through `aiobotocore`;
+  metric names match the C++ KPL constants.
+
 ### What v0.1 will NOT do
 
-- No CloudWatch metrics (Phase 7).
 - No sync API (Phase 8).
 - No producer-side consumer / KCL replacement.
 - No native binary, ever. No subprocess, no IPC, no protobuf framing.
@@ -209,11 +215,13 @@ Phased on purpose. Each phase ships something testable on its own.
 - Per-stream pipeline wiring, graceful shutdown, backpressure semaphore,
   configurable knobs.
 
-### Phase 7 — CloudWatch metrics (optional)  🚧 next
+### Phase 7 — CloudWatch metrics ✅
 
-- Per-shard / per-stream / global counters, periodic upload.
+- In-process counters per metric / stream / shard / error code, rolling
+  60 s window, periodic upload via `aiobotocore`. Opt-in via
+  `Config.metrics_level`; default `NONE` is a zero-overhead no-op.
 
-### Phase 8 — Sync bridge (optional)
+### Phase 8 — Sync bridge (optional)  🚧 next
 
 - `Producer.sync()` for synchronous callers (no async runtime required).
 

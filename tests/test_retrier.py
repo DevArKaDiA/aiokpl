@@ -415,6 +415,90 @@ async def test_expired_record_fails_with_expired_code() -> None:
 # ─── Mixed batch ───────────────────────────────────────────────────────────
 
 
+async def test_retrier_emits_success_metrics() -> None:
+    from aiokpl.metrics import (
+        NAME_KINESIS_RECORDS_DATA_PUT,
+        NAME_KINESIS_RECORDS_PUT,
+        NAME_RETRIES_PER_RECORD,
+        NAME_USER_RECORDS_DATA_PUT,
+        NAME_USER_RECORDS_PUT,
+        MetricsLevel,
+        MetricsManager,
+    )
+
+    buf = _make_buffered(hash_key=10)
+    ar = _ar_with([buf], predicted=3)
+    pr = PerRecordOutcome(
+        batch=ar,
+        success=True,
+        shard_id="shardId-3",
+        sequence_number="seq",
+        error_code=None,
+        error_message=None,
+    )
+    cb, sm = CaptureCallbacks(), FakeShardMap()
+    mgr = MetricsManager(level=MetricsLevel.DETAILED)
+    async with mgr:
+        retrier = Retrier(
+            shard_map=sm,
+            on_finish=cb.on_finish,
+            on_retry=cb.on_retry,
+            record_ttl_ms=30_000.0,
+            fail_if_throttled=False,
+            retry_deadline_ms=100.0,
+            clock=lambda: 5.0,
+            metrics=mgr,
+            stream_name="s",
+        )
+        await retrier.handle(_outcome(per_record=(pr,), batch_items=(ar,)))
+    snap = mgr.snapshot()
+    names = {k.name for k in snap}
+    assert NAME_USER_RECORDS_PUT in names
+    assert NAME_USER_RECORDS_DATA_PUT in names
+    assert NAME_KINESIS_RECORDS_PUT in names
+    assert NAME_KINESIS_RECORDS_DATA_PUT in names
+    assert NAME_RETRIES_PER_RECORD in names
+
+
+async def test_retrier_emits_error_metrics_on_retry_and_fail() -> None:
+    from aiokpl.metrics import (
+        NAME_ALL_ERRORS,
+        NAME_ERRORS_BY_CODE,
+        MetricsLevel,
+        MetricsManager,
+    )
+
+    buf = _make_buffered()
+    ar = _ar_with([buf], predicted=0)
+    pr = PerRecordOutcome(
+        batch=ar,
+        success=False,
+        shard_id=None,
+        sequence_number=None,
+        error_code=PROVISIONED_THROUGHPUT_EXCEEDED,
+        error_message="slow",
+    )
+    cb, sm = CaptureCallbacks(), FakeShardMap()
+    mgr = MetricsManager(level=MetricsLevel.DETAILED)
+    async with mgr:
+        retrier = Retrier(
+            shard_map=sm,
+            on_finish=cb.on_finish,
+            on_retry=cb.on_retry,
+            record_ttl_ms=30_000.0,
+            fail_if_throttled=True,
+            retry_deadline_ms=100.0,
+            clock=lambda: 5.0,
+            metrics=mgr,
+            stream_name="s",
+        )
+        await retrier.handle(_outcome(per_record=(pr,), batch_items=(ar,)))
+    snap = mgr.snapshot()
+    names = {k.name for k in snap}
+    assert NAME_ALL_ERRORS in names
+    assert NAME_ERRORS_BY_CODE in names
+
+
 async def test_mixed_success_and_failure() -> None:
     b1, b2 = _make_buffered(hash_key=10), _make_buffered(hash_key=20)
     ar1 = _ar_with([b1], predicted=0)

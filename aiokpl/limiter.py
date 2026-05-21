@@ -36,6 +36,7 @@ from anyio.abc import TaskGroup
 from sortedcontainers import SortedKeyList
 
 from aiokpl.aggregator import AggregatedBatch
+from aiokpl.metrics import NAME_BUFFERED_TIME, NAME_EXPIRED_RECORDS, MetricsManager
 from aiokpl.token_bucket import TokenBucket
 
 RECORDS_PER_SEC_PER_SHARD = 1_000.0
@@ -167,6 +168,8 @@ class Limiter:
         expiration_ms: float = DEFAULT_EXPIRATION_MS,
         drain_interval_ms: float = DEFAULT_DRAIN_INTERVAL_MS,
         clock: Callable[[], float] = time.monotonic,
+        metrics: MetricsManager | None = None,
+        stream_name: str | None = None,
     ) -> None:
         self._on_admit = on_admit
         self._on_expired = on_expired
@@ -175,6 +178,8 @@ class Limiter:
         self._expiration = expiration_ms / 1000.0
         self._drain_interval = drain_interval_ms / 1000.0
         self._clock = clock
+        self._metrics = metrics
+        self._stream_name = stream_name
 
         self._shards: dict[int | None, ShardLimiter] = {}
         self._lock = anyio.Lock()
@@ -282,9 +287,37 @@ class Limiter:
     ) -> None:
         # Expired first, mirroring the C++ Limiter::drain order.
         for batch in expired:
+            self._emit_expired(batch)
             await self._on_expired(batch, "Expired")
         for batch in admitted:
+            self._emit_buffered_time(batch)
             await self._on_admit(batch)
+
+    def _emit_expired(self, batch: AggregatedBatch) -> None:
+        if self._metrics is None:
+            return
+        shard = batch.predicted_shard
+        self._metrics.put(
+            NAME_EXPIRED_RECORDS,
+            float(batch.count),
+            stream=self._stream_name,
+            shard_id=None if shard is None else str(shard),
+        )
+
+    def _emit_buffered_time(self, batch: AggregatedBatch) -> None:
+        if self._metrics is None:
+            return
+        # Admitted batches always carry at least one item — the Reducer never
+        # produces an empty AggregatedBatch.
+        arrival_min = min(it.arrival_time for it in batch.items)
+        elapsed_ms = (self._clock() - arrival_min) * 1000.0
+        shard = batch.predicted_shard
+        self._metrics.put(
+            NAME_BUFFERED_TIME,
+            elapsed_ms,
+            stream=self._stream_name,
+            shard_id=None if shard is None else str(shard),
+        )
 
 
 __all__ = [

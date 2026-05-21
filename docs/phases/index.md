@@ -9,12 +9,12 @@ predecessors are green.
 | 0 | Repo scaffolding, design docs | Done |
 | 1 | Aggregation codec (KPL wire format) | Done |
 | 2 | ShardMap + prediction | Done |
-| 3 | Reducer, Aggregator, Collector | Next |
-| 4 | Limiter + TokenBucket | Planned |
-| 5 | Sender + Retrier | Planned |
-| 6 | Producer + lifecycle (first usable release: v0.1) | Planned |
-| 7 | CloudWatch metrics | Optional |
-| 8 | Sync bridge | Optional |
+| 3 | Reducer, Aggregator, Collector | Done |
+| 4 | Limiter + TokenBucket | Done |
+| 5 | Sender + Retrier | Done |
+| 6 | Producer + lifecycle (first usable release: v0.1) | Done |
+| 7 | CloudWatch metrics (opt-in) | Done |
+| 8 | Sync bridge | Next |
 
 ## Per-phase summary
 
@@ -35,7 +35,10 @@ predecessors are green.
   the full retry classification table.
 - **Phase 6 — Producer + lifecycle.** First usable release. Per-stream
   pipelines, graceful shutdown, backpressure semaphore.
-- **Phase 7 — Metrics (optional).** CloudWatch counters per
-  (stream, shard, name).
+- **Phase 7 — Metrics.** In-process counters per
+  (name, stream, shard, error-code) with a rolling 60 s window of
+  (count, sum, min, max). Periodic upload to CloudWatch via `aiobotocore`,
+  opt-in via `Config.metrics_level`. Default off, zero overhead.
+  [Details](phase-7-metrics.md).
 - **Phase 8 — Sync bridge (optional).** Thin wrapper for synchronous
   callers (no async runtime required).

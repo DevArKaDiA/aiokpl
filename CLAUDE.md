@@ -114,6 +114,9 @@ Translation table:
 - **Package manager is `uv`**.
 - **Lint+format is `ruff`** with rules in `pyproject.toml`.
 - **No runtime deps in Phase 1.** Pure stdlib + hashlib.
+- **Metrics off by default.** Phase 7 ships in-process counters with optional
+  CloudWatch upload. `MetricsManager` is a no-op when `level=NONE` —
+  zero-overhead path. CloudWatch upload is asyncio-only (aiobotocore).
 
 ---
 
@@ -338,10 +341,13 @@ testable.
   and route through the same Retrier classification as network errors.
 - Public API: `from aiokpl import Producer, Config, Outcome`.
 
-### Phase 7 — Metrics (optional, last)
+### Phase 7 — Metrics ✅ done
 
-- `aiokpl/metrics.py`: in-process counters per (stream, shard, name). Periodic
-  flush to CloudWatch via aiobotocore. Toggleable. Default off in v0.
+- `aiokpl/metrics.py`: in-process counters per (name, stream, shard, error
+  code) with a rolling 60 s window of (count, sum, min, max). Periodic flush
+  to CloudWatch via aiobotocore. Toggleable via `Config.metrics_level`
+  (`NONE` / `SUMMARY` / `DETAILED`). Default `NONE` is a zero-overhead no-op.
+- Metric names match the C++ KPL constants verbatim.
 
 ### Phase 8 — Sync bridge (optional)
 

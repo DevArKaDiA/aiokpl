@@ -34,7 +34,17 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Protocol, runtime_checkable
 
-from aiokpl.aggregator import _BufferedRecord
+from aiokpl.aggregator import AggregatedBatch, _BufferedRecord
+from aiokpl.metrics import (
+    NAME_ALL_ERRORS,
+    NAME_ERRORS_BY_CODE,
+    NAME_KINESIS_RECORDS_DATA_PUT,
+    NAME_KINESIS_RECORDS_PUT,
+    NAME_RETRIES_PER_RECORD,
+    NAME_USER_RECORDS_DATA_PUT,
+    NAME_USER_RECORDS_PUT,
+    MetricsManager,
+)
 from aiokpl.result import Attempt, RecordResult
 from aiokpl.sender import PerRecordOutcome, SendOutcome
 
@@ -82,11 +92,13 @@ class Retrier:
     __slots__ = (
         "_clock",
         "_fail_if_throttled",
+        "_metrics",
         "_on_finish",
         "_on_retry",
         "_record_ttl",
         "_retry_deadline",
         "_shard_map",
+        "_stream_name",
     )
 
     def __init__(
@@ -99,6 +111,8 @@ class Retrier:
         fail_if_throttled: bool = False,
         retry_deadline_ms: float = 50.0,
         clock: Callable[[], float] = time.monotonic,
+        metrics: MetricsManager | None = None,
+        stream_name: str | None = None,
     ) -> None:
         self._shard_map = shard_map
         self._on_finish = on_finish
@@ -109,6 +123,8 @@ class Retrier:
         # ``record_max_buffered_time`` so they get a faster second chance.
         self._retry_deadline = retry_deadline_ms / 1000.0 / 2.0
         self._clock = clock
+        self._metrics = metrics
+        self._stream_name = stream_name
 
     async def handle(self, outcome: SendOutcome) -> None:
         """Walk every record in the batch, classify, dispatch."""
@@ -152,6 +168,7 @@ class Retrier:
         # No predicted shard means the ShardMap was not READY when the record
         # was buffered; we have nothing to validate against, just accept.
         if predicted is None or actual_int is None or predicted == actual_int:
+            self._emit_kinesis_record_metrics(per_record.batch, per_record.shard_id)
             for buffered in per_record.batch.items:
                 await self._finish_success(outcome, buffered, per_record)
             return
@@ -163,11 +180,15 @@ class Retrier:
         # ask for; retry as Wrong Shard.
         actual_range = self._shard_map.hashrange(actual_int)
         invalidated = False
+        emitted_kinesis = False
         for buffered in per_record.batch.items:
             in_range = (
                 actual_range is not None and actual_range[0] <= buffered.hash_key <= actual_range[1]
             )
             if in_range:
+                if not emitted_kinesis:
+                    self._emit_kinesis_record_metrics(per_record.batch, per_record.shard_id)
+                    emitted_kinesis = True
                 await self._finish_success(outcome, buffered, per_record)
             else:
                 await self._retry_not_expired(
@@ -202,6 +223,7 @@ class Retrier:
             sequence_number=per_record.sequence_number,
             attempts=tuple(buffered.attempts),
         )
+        self._emit_user_record_success(buffered, per_record.shard_id)
         await self._on_finish(buffered, result)
 
     async def _fail(
@@ -226,6 +248,7 @@ class Retrier:
             sequence_number=None,
             attempts=tuple(buffered.attempts),
         )
+        self._emit_error(code)
         await self._on_finish(buffered, result)
 
     async def _retry_not_expired(
@@ -244,6 +267,7 @@ class Retrier:
                 error_message=message,
             )
         )
+        self._emit_error(code)
         now = self._clock()
         if now - buffered.arrival_time > self._record_ttl:
             # The failed Attempt is already recorded above; tack on an Expired
@@ -263,10 +287,65 @@ class Retrier:
                 sequence_number=None,
                 attempts=tuple(buffered.attempts),
             )
+            self._emit_error(EXPIRED_ERROR_CODE)
             await self._on_finish(buffered, result)
             return
         buffered.deadline = now + self._retry_deadline
         await self._on_retry(buffered)
+
+    # ─── Metrics helpers ───────────────────────────────────────────────────
+
+    def _emit_user_record_success(self, buffered: _BufferedRecord, shard_id: str | None) -> None:
+        if self._metrics is None:
+            return
+        self._metrics.put(
+            NAME_USER_RECORDS_PUT,
+            1.0,
+            stream=self._stream_name,
+            shard_id=shard_id,
+        )
+        self._metrics.put(
+            NAME_USER_RECORDS_DATA_PUT,
+            float(len(buffered.user_record.data)),
+            stream=self._stream_name,
+            shard_id=shard_id,
+        )
+        # ``len(attempts) - 1`` matches the C++ KPL definition of "retries":
+        # the terminal attempt does not count as a retry.
+        retries = max(len(buffered.attempts) - 1, 0)
+        self._metrics.put(
+            NAME_RETRIES_PER_RECORD,
+            float(retries),
+            stream=self._stream_name,
+            shard_id=shard_id,
+        )
+
+    def _emit_kinesis_record_metrics(self, batch: AggregatedBatch, shard_id: str | None) -> None:
+        if self._metrics is None:
+            return
+        self._metrics.put(
+            NAME_KINESIS_RECORDS_PUT,
+            1.0,
+            stream=self._stream_name,
+            shard_id=shard_id,
+        )
+        self._metrics.put(
+            NAME_KINESIS_RECORDS_DATA_PUT,
+            float(batch.size),
+            stream=self._stream_name,
+            shard_id=shard_id,
+        )
+
+    def _emit_error(self, code: str) -> None:
+        if self._metrics is None:
+            return
+        self._metrics.put(NAME_ALL_ERRORS, 1.0, stream=self._stream_name)
+        self._metrics.put(
+            NAME_ERRORS_BY_CODE,
+            1.0,
+            stream=self._stream_name,
+            error_code=code,
+        )
 
 
 __all__ = [

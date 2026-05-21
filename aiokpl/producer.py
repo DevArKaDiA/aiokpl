@@ -47,11 +47,14 @@ from aiokpl.aggregator import AggregatedBatch, Aggregator, _BufferedRecord
 from aiokpl.collector import Collector, PutRecordsBatch
 from aiokpl.config import Config
 from aiokpl.limiter import Limiter
+from aiokpl.metrics import NAME_USER_RECORDS_PENDING, MetricsLevel, MetricsManager
 from aiokpl.outcome import Outcome
 from aiokpl.result import RecordResult
 from aiokpl.retrier import EXPIRED_ERROR_CODE, EXPIRED_ERROR_MESSAGE, Retrier
 from aiokpl.sender import PerRecordOutcome, Sender, SendOutcome
 from aiokpl.shard_map import ShardMap
+
+_PENDING_REPORT_INTERVAL_S = 5.0
 
 
 @dataclass(slots=True)
@@ -93,6 +96,14 @@ class Producer:
         self._outstanding = 0
         self._task_group: TaskGroup | None = None
         self._closed = False
+        self._metrics = MetricsManager(
+            level=config.metrics_level,
+            namespace=config.metrics_namespace,
+            upload_interval_ms=config.metrics_upload_interval_ms,
+            cw_client_factory=self._make_cw_client_factory()
+            if config.metrics_level is not MetricsLevel.NONE and config.metrics_cloudwatch_enabled
+            else None,
+        )
 
     # ─── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -114,6 +125,9 @@ class Producer:
             aws_session_token=self._config.aws_session_token,
         )
         self._kinesis_client = await self._exit_stack.enter_async_context(client_ctx)
+        await self._exit_stack.enter_async_context(self._metrics)
+        if self._config.metrics_level is not MetricsLevel.NONE:
+            tg.start_soon(self._pending_reporter)
         return self
 
     async def __aexit__(
@@ -136,6 +150,15 @@ class Producer:
     def outstanding_records(self) -> int:
         """Records currently in flight (between :meth:`put_record` and resolution)."""
         return self._outstanding
+
+    @property
+    def metrics(self) -> MetricsManager:
+        """Read-only handle to the in-process :class:`MetricsManager`.
+
+        Always non-None; when ``config.metrics_level == MetricsLevel.NONE``
+        every :meth:`MetricsManager.put` is a no-op and the snapshot is empty.
+        """
+        return self._metrics
 
     async def put_record(
         self,
@@ -262,6 +285,8 @@ class Producer:
             record_max_buffered_time_ms=cfg.record_max_buffered_time_ms,
             aggregation_max_count=cfg.aggregation_max_count,
             aggregation_max_size=cfg.aggregation_max_size,
+            metrics=self._metrics,
+            stream_name=stream,
         )
         await self._exit_stack.enter_async_context(aggregator)
 
@@ -272,6 +297,8 @@ class Producer:
             bytes_per_sec_per_shard=cfg.rate_limit_bytes_per_sec_per_shard,
             expiration_ms=cfg.record_ttl_ms,
             drain_interval_ms=cfg.drain_interval_ms,
+            metrics=self._metrics,
+            stream_name=stream,
         )
         await self._exit_stack.enter_async_context(limiter)
 
@@ -282,7 +309,11 @@ class Producer:
         )
         await self._exit_stack.enter_async_context(collector)
 
-        sender = Sender(stream_name=stream, client=self._kinesis_client)
+        sender = Sender(
+            stream_name=stream,
+            client=self._kinesis_client,
+            metrics=self._metrics,
+        )
 
         retrier = Retrier(
             shard_map=shard_map,
@@ -291,6 +322,8 @@ class Producer:
             record_ttl_ms=cfg.record_ttl_ms,
             fail_if_throttled=cfg.fail_if_throttled,
             retry_deadline_ms=cfg.retry_deadline_ms,
+            metrics=self._metrics,
+            stream_name=stream,
         )
 
         pipeline = _StreamPipeline(
@@ -309,6 +342,35 @@ class Producer:
         # aggregator falls back to single-record mode until READY.
         await shard_map.start()
         return pipeline
+
+    def _make_cw_client_factory(self) -> Any:
+        # Builds a fresh aiobotocore CloudWatch client every time it's
+        # called. The MetricsManager only invokes it once at __aenter__ when
+        # ``level != NONE``.
+        cfg = self._config
+
+        def factory() -> Any:
+            session = aiobotocore.session.get_session()
+            return session.create_client(
+                "cloudwatch",
+                region_name=cfg.region,
+                endpoint_url=cfg.endpoint_url,
+                verify=cfg.verify_ssl,
+                aws_access_key_id=cfg.aws_access_key_id,
+                aws_secret_access_key=cfg.aws_secret_access_key,
+                aws_session_token=cfg.aws_session_token,
+            )
+
+        return factory
+
+    async def _pending_reporter(self) -> None:
+        # Periodic gauge of in-flight records, mirroring the C++ KPL's
+        # ``UserRecordsPending`` (``kinesis_producer.cc:412-431``). One sample
+        # per tick; aggregation in CloudWatch turns this into a gauge over
+        # the upload interval.
+        while not self._closed:
+            self._metrics.put(NAME_USER_RECORDS_PENDING, float(self._outstanding))
+            await anyio.sleep(_PENDING_REPORT_INTERVAL_S)
 
     async def _send_and_handle(self, pipeline: _StreamPipeline, batch: PutRecordsBatch) -> None:
         outcome = await pipeline.sender.send(batch)

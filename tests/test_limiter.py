@@ -298,6 +298,74 @@ async def test_drain_loop_returns_when_closed_inside_lock() -> None:
         await lim.aclose()
 
 
+async def test_limiter_emits_buffered_time_and_expired_metrics() -> None:
+    from aiokpl.aggregation import UserRecord
+    from aiokpl.aggregator import AggregatedBatch as RealAB
+    from aiokpl.aggregator import _BufferedRecord
+    from aiokpl.metrics import (
+        NAME_BUFFERED_TIME,
+        NAME_EXPIRED_RECORDS,
+        MetricsLevel,
+        MetricsManager,
+    )
+
+    clock = FakeClock(t=5.0)
+    c = Collected()
+    mgr = MetricsManager(level=MetricsLevel.DETAILED, clock=clock)
+    async with mgr, Limiter(
+        on_admit=c.on_admit,
+        on_expired=c.on_expired,
+        drain_interval_ms=1.0,
+        expiration_ms=10_000.0,
+        clock=clock,
+        metrics=mgr,
+        stream_name="metricstream",
+    ) as lim:
+        buffered = _BufferedRecord(
+            user_record=UserRecord(partition_key="pk", data=b"x"),
+            deadline=0.0,
+            hash_key=1,
+            arrival_time=3.0,
+        )
+        real = RealAB(predicted_shard=2)
+        real.add(buffered)
+        await lim.put(real)
+    snap = mgr.snapshot()
+    names = {k.name for k in snap}
+    assert NAME_BUFFERED_TIME in names
+
+    # Also exercise the expired path: starve tokens so the batch stays
+    # queued, advance the clock past expiration, then flush.
+    clock_b = FakeClock(t=0.0)
+    c2 = Collected()
+    mgr2 = MetricsManager(level=MetricsLevel.DETAILED, clock=clock_b)
+    async with mgr2, Limiter(
+        on_admit=c2.on_admit,
+        on_expired=c2.on_expired,
+        drain_interval_ms=1.0,
+        expiration_ms=100.0,
+        records_per_sec_per_shard=0.0,
+        bytes_per_sec_per_shard=0.0,
+        clock=clock_b,
+        metrics=mgr2,
+        stream_name="metricstream",
+    ) as lim2:
+        buffered_b = _BufferedRecord(
+            user_record=UserRecord(partition_key="pk", data=b"x"),
+            deadline=0.0,
+            hash_key=1,
+            arrival_time=0.0,
+        )
+        real_b = RealAB(predicted_shard=None)
+        real_b.add(buffered_b)
+        await lim2.put(real_b)
+        clock_b.advance(1.0)
+        await lim2.flush()
+    snap2 = mgr2.snapshot()
+    names2 = {k.name for k in snap2}
+    assert NAME_EXPIRED_RECORDS in names2
+
+
 async def test_put_without_context_raises() -> None:
     c = Collected()
     lim = Limiter(on_admit=c.on_admit, on_expired=c.on_expired)

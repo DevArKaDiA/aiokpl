@@ -23,8 +23,8 @@
 | 4 | Limiter + TokenBucket | Done |
 | 5 | Sender + Retrier | Done |
 | 6 | Producer + lifecycle (first usable release: v0.1) | Done |
-| 7 | CloudWatch metrics | Optional |
-| 8 | Sync bridge | Optional |
+| 7 | CloudWatch metrics (opt-in) | Done |
+| 8 | Sync bridge | Next |
 
 ## Why aiokpl
 

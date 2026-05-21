@@ -34,6 +34,7 @@ from anyio.abc import TaskGroup
 
 from aiokpl.aggregation import UserRecord, encode_aggregated
 from aiokpl.hashing import md5_hash_key, parse_explicit_hash_key
+from aiokpl.metrics import NAME_USER_RECORDS_RECEIVED, MetricsManager
 from aiokpl.reducer import Reducer
 from aiokpl.result import Attempt
 from aiokpl.shard_map import ShardMapState
@@ -185,6 +186,8 @@ class Aggregator:
         aggregation_max_count: int = 4_294_967_295,
         aggregation_max_size: int = 51_200,
         clock: Callable[[], float] = time.monotonic,
+        metrics: MetricsManager | None = None,
+        stream_name: str | None = None,
     ) -> None:
         self._shard_map = shard_map
         self._on_batch_ready = on_batch_ready
@@ -193,6 +196,8 @@ class Aggregator:
         self._max_count = aggregation_max_count if aggregation_enabled else 1
         self._max_size = aggregation_max_size
         self._clock = clock
+        self._metrics = metrics
+        self._stream_name = stream_name
 
         self._reducers: dict[int | None, Reducer[_BufferedRecord, AggregatedBatch]] = {}
         self._lock = anyio.Lock()
@@ -246,6 +251,12 @@ class Aggregator:
         else:
             hash_key = md5_hash_key(user_record.partition_key)
         now = self._clock()
+        if self._metrics is not None:
+            self._metrics.put(
+                NAME_USER_RECORDS_RECEIVED,
+                1.0,
+                stream=self._stream_name,
+            )
         return _BufferedRecord(
             user_record=user_record,
             deadline=now + self._buffered_time,

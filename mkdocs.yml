@@ -110,6 +110,7 @@ nav:
       - Phase 2 — ShardMap: phases/phase-2-shardmap.md
       - Phase 5 — Sender + Retrier: phases/phase-5-sender-retrier.md
       - Phase 6 — Producer (v0.1): phases/phase-6-producer.md
+      - Phase 7 — Metrics: phases/phase-7-metrics.md
   - API reference: reference/
   - Development:
       - Setup: dev/setup.md

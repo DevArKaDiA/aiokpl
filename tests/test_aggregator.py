@@ -270,6 +270,31 @@ async def test_aclose_is_idempotent() -> None:
         await agg.aclose()
 
 
+async def test_aggregator_emits_user_records_received_metric() -> None:
+    from aiokpl.metrics import NAME_USER_RECORDS_RECEIVED, MetricsLevel, MetricsManager
+
+    async def on_batch_ready(_b: AggregatedBatch) -> None:
+        return None
+
+    clock, _ = _make_clock()
+    sm = FakeShardMap(state=ShardMapState.READY, table={})
+    mgr = MetricsManager(level=MetricsLevel.DETAILED, clock=clock)
+    async with mgr, Aggregator(
+        sm,
+        on_batch_ready=on_batch_ready,
+        clock=clock,
+        metrics=mgr,
+        stream_name="my-stream",
+    ) as agg:
+        await agg.put(UserRecord(partition_key="pk", data=b"x", explicit_hash_key="0"))
+        await agg.put(UserRecord(partition_key="pk2", data=b"y", explicit_hash_key="1"))
+    snap = mgr.snapshot()
+    received_keys = [k for k in snap if k.name == NAME_USER_RECORDS_RECEIVED]
+    assert len(received_keys) == 1
+    assert received_keys[0].stream == "my-stream"
+    assert snap[received_keys[0]][0] == 2
+
+
 @pytest.mark.parametrize("dummy", [1])
 def test_module_imports(dummy: int) -> None:
     from aiokpl import aggregator

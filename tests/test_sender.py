@@ -166,3 +166,33 @@ async def test_empty_batch_raises() -> None:
     sender = Sender(stream_name="s", client=_FakeClient(response={"Records": []}))
     with pytest.raises(ValueError, match="empty"):
         await sender.send(batch)
+
+
+async def test_sender_emits_request_time_metric_on_success_and_failure() -> None:
+    from aiokpl.metrics import NAME_REQUEST_TIME, MetricsLevel, MetricsManager
+
+    # Success path.
+    batch = _make_batch(("pk", b"a", None, 1))
+    client = _FakeClient(
+        response={
+            "Records": [{"SequenceNumber": "s", "ShardId": "shardId-0"}],
+            "FailedRecordCount": 0,
+        }
+    )
+    mgr = MetricsManager(level=MetricsLevel.DETAILED)
+    async with mgr:
+        sender = Sender(stream_name="s", client=client, metrics=mgr)
+        await sender.send(batch)
+    snap = mgr.snapshot()
+    assert any(k.name == NAME_REQUEST_TIME for k in snap)
+
+    # Failure path.
+    batch2 = _make_batch(("pk", b"a", None, 1))
+    err = ClientError({"Error": {"Code": "X", "Message": "m"}}, "PutRecords")
+    client_err = _FakeClient(exc=err)
+    mgr2 = MetricsManager(level=MetricsLevel.DETAILED)
+    async with mgr2:
+        sender2 = Sender(stream_name="s", client=client_err, metrics=mgr2)
+        await sender2.send(batch2)
+    snap2 = mgr2.snapshot()
+    assert any(k.name == NAME_REQUEST_TIME for k in snap2)

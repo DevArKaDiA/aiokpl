@@ -26,6 +26,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from aiokpl.aggregator import AggregatedBatch
 from aiokpl.collector import PutRecordsBatch
+from aiokpl.metrics import NAME_REQUEST_TIME, MetricsManager
 
 
 @runtime_checkable
@@ -94,7 +95,7 @@ def _classify_request_exception(exc: BaseException) -> tuple[str, str]:
 class Sender:
     """Send a :class:`PutRecordsBatch` to Kinesis. Stateless beyond client+stream."""
 
-    __slots__ = ("_client", "_clock", "_stream_name")
+    __slots__ = ("_client", "_clock", "_metrics", "_stream_name")
 
     def __init__(
         self,
@@ -102,10 +103,12 @@ class Sender:
         stream_name: str,
         client: _KinesisClient,
         clock: Callable[[], float] = time.monotonic,
+        metrics: MetricsManager | None = None,
     ) -> None:
         self._stream_name = stream_name
         self._client = client
         self._clock = clock
+        self._metrics = metrics
 
     async def send(self, batch: PutRecordsBatch) -> SendOutcome:
         """Issue ``PutRecords``, return outcome.
@@ -138,6 +141,7 @@ class Sender:
             )
         except BaseException as exc:
             ended_at = self._clock()
+            self._emit_request_time(started_at, ended_at)
             return SendOutcome(
                 stream_name=self._stream_name,
                 started_at=started_at,
@@ -147,6 +151,7 @@ class Sender:
                 batch_items=batch_items,
             )
         ended_at = self._clock()
+        self._emit_request_time(started_at, ended_at)
 
         response_records = response.get("Records", ())
         if len(response_records) != batch.count:
@@ -176,6 +181,15 @@ class Sender:
             request_error=None,
             per_record=per_record,
             batch_items=batch_items,
+        )
+
+    def _emit_request_time(self, started_at: float, ended_at: float) -> None:
+        if self._metrics is None:
+            return
+        self._metrics.put(
+            NAME_REQUEST_TIME,
+            (ended_at - started_at) * 1000.0,
+            stream=self._stream_name,
         )
 
 

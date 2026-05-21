@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from aiokpl.metrics import MetricsLevel
+
 
 @dataclass(slots=True, frozen=True)
 class Config:
@@ -52,6 +54,15 @@ class Config:
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
     aws_session_token: str | None = None
+
+    # ── Metrics (CloudWatch upload; opt-in, default off) ──────────────────
+    metrics_level: MetricsLevel = MetricsLevel.NONE
+    metrics_namespace: str = "aiokpl"
+    metrics_upload_interval_ms: float = 60_000.0
+    # When False, the MetricsManager keeps in-process counters but does NOT
+    # construct a CloudWatch client or upload — used by tests and by users
+    # who want to scrape via :attr:`Producer.metrics` themselves.
+    metrics_cloudwatch_enabled: bool = True
 
 
 __all__ = ["Config"]
