@@ -279,13 +279,16 @@ async def test_aggregator_emits_user_records_received_metric() -> None:
     clock, _ = _make_clock()
     sm = FakeShardMap(state=ShardMapState.READY, table={})
     mgr = MetricsManager(level=MetricsLevel.DETAILED, clock=clock)
-    async with mgr, Aggregator(
-        sm,
-        on_batch_ready=on_batch_ready,
-        clock=clock,
-        metrics=mgr,
-        stream_name="my-stream",
-    ) as agg:
+    async with (
+        mgr,
+        Aggregator(
+            sm,
+            on_batch_ready=on_batch_ready,
+            clock=clock,
+            metrics=mgr,
+            stream_name="my-stream",
+        ) as agg,
+    ):
         await agg.put(UserRecord(partition_key="pk", data=b"x", explicit_hash_key="0"))
         await agg.put(UserRecord(partition_key="pk2", data=b"y", explicit_hash_key="1"))
     snap = mgr.snapshot()

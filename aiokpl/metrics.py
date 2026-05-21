@@ -1,21 +1,18 @@
-"""In-process metrics with optional periodic CloudWatch upload.
+"""In-process metric accumulator + scheduled flush onto a :class:`MetricsSink`.
 
 Mirrors ``aws/metrics/metrics_manager.{h,cc}`` plus ``aws/metrics/accumulator.h``
 of the C++ KPL. The data model is intentionally simple: each named metric owns
-a rolling 60-second window of (count, sum, min, max) bucketed by integer
+a rolling 60-second window of ``(count, sum, min, max)`` bucketed by integer
 monotonic second. Metric names follow the C++ KPL constants verbatim so
 operators reading aiokpl dashboards next to native-KPL dashboards see the
 same labels.
 
 The :class:`MetricsManager` is **off by default**: when
-``level == MetricsLevel.NONE`` the :meth:`put` fast-path returns immediately
-without any allocation, and ``__aenter__`` spawns no upload task. This is the
-toggle the rest of the pipeline checks — stages call ``self._metrics.put(...)``
-unconditionally if a manager is set, and the manager itself short-circuits.
-
-CloudWatch upload is asyncio-only (``aiobotocore`` is asyncio-only), matching
-the same constraint as the Sender (see ``CLAUDE.md`` "Concurrency model").
-Stages stay backend-agnostic because they only call :meth:`put`.
+``level == MetricsLevel.NONE`` :meth:`put` returns immediately without any
+allocation, and ``__aenter__`` spawns no upload task. The Manager flushes
+aggregated snapshots onto a :class:`aiokpl.sinks.MetricsSink`. The library
+itself knows nothing about CloudWatch, OpenTelemetry, or Datadog — those are
+first-party sinks shipped under :mod:`aiokpl.sinks`.
 """
 
 from __future__ import annotations
@@ -25,20 +22,26 @@ import math
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
-from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import Any
 
 import anyio
 from anyio.abc import TaskGroup
+
+from aiokpl.sinks import (
+    EventfulMetricsSink,
+    MetricEvent,
+    MetricSnapshot,
+    MetricsSink,
+    NullSink,
+)
 
 
 class MetricsLevel(enum.Enum):
     """How much detail :class:`MetricsManager` records.
 
     ``NONE`` is the zero-overhead default: :meth:`MetricsManager.put` returns
-    immediately, no upload task is spawned, no CloudWatch client is created.
+    immediately, no upload task is spawned, no sink is entered.
     ``SUMMARY`` keeps only the global+stream dimensions (``shard_id`` and
     ``error_code`` are dropped). ``DETAILED`` keeps every dimension.
     """
@@ -48,9 +51,7 @@ class MetricsLevel(enum.Enum):
     DETAILED = "detailed"
 
 
-# Metric names taken verbatim from aws/metrics/metrics_constants.h. Keeping
-# the strings identical to the C++ KPL means operators can reuse existing
-# dashboards.
+# Metric names taken verbatim from aws/metrics/metrics_constants.h.
 NAME_USER_RECORDS_RECEIVED = "UserRecordsReceived"
 NAME_USER_RECORDS_PUT = "UserRecordsPut"
 NAME_USER_RECORDS_DATA_PUT = "UserRecordsDataPut"
@@ -65,8 +66,6 @@ NAME_REQUEST_TIME = "RequestTime"
 NAME_EXPIRED_RECORDS = "ExpiredRecords"
 
 _WINDOW_SECONDS = 60
-# CloudWatch PutMetricData hard limit on MetricData entries per call.
-_CLOUDWATCH_BATCH_LIMIT = 1000
 
 
 @dataclass(slots=True)
@@ -140,6 +139,15 @@ class _Accumulator:
                 mx = b.max
         return count, total, mn, mx
 
+    def window_bounds(self) -> tuple[float, float]:
+        """Return ``(window_start, window_end)`` in seconds.
+
+        Returns ``(0.0, 0.0)`` if the accumulator is empty.
+        """
+        if not self._buckets:
+            return 0.0, 0.0
+        return float(self._buckets[0][0]), float(self._buckets[-1][0] + 1)
+
 
 @dataclass(slots=True, frozen=True)
 class MetricKey:
@@ -154,6 +162,17 @@ class MetricKey:
     stream: str | None = None
     shard_id: str | None = None
     error_code: str | None = None
+
+    def dimensions(self) -> tuple[tuple[str, str], ...]:
+        """Render this key as the ``(name, value)`` tuple sinks consume."""
+        dims: list[tuple[str, str]] = []
+        if self.stream is not None:
+            dims.append(("stream", self.stream))
+        if self.shard_id is not None:
+            dims.append(("shard", self.shard_id))
+        if self.error_code is not None:
+            dims.append(("error_code", self.error_code))
+        return tuple(dims)
 
 
 class Metric:
@@ -175,71 +194,69 @@ class Metric:
     def stats(self) -> tuple[int, float, float, float] | None:
         return self._acc.stats()
 
+    def window_bounds(self) -> tuple[float, float]:
+        return self._acc.window_bounds()
+
 
 @dataclass(slots=True)
 class _UploadState:
     """Mutable state attached to an active uploader task."""
 
-    cw_client: Any = None
     scope: anyio.CancelScope | None = None
     last_upload_at: float = field(default=0.0)
 
 
 class MetricsManager:
-    """Owns the metric registry and the periodic CloudWatch uploader.
+    """Owns the metric registry and schedules flushes onto a :class:`MetricsSink`.
 
     When ``level == MetricsLevel.NONE``: :meth:`put` is a no-op, no upload
-    task is spawned, no CloudWatch client is ever created. This is the
-    zero-overhead path the Producer relies on for the default config.
+    task is spawned, the sink is not entered. This is the zero-overhead path
+    the Producer relies on for the default config.
 
     When ``level == MetricsLevel.SUMMARY``: ``shard_id`` and ``error_code``
     dimensions are dropped before registry lookup so only coarse keys exist.
 
     When ``level == MetricsLevel.DETAILED``: every dimension is preserved.
+
+    The sink owns its own transport lifecycle; the manager enters and exits
+    it as part of its own ``async with`` so callers only manage one context.
     """
 
     def __init__(
         self,
         *,
         level: MetricsLevel = MetricsLevel.NONE,
-        namespace: str = "aiokpl",
+        sink: MetricsSink | None = None,
         upload_interval_ms: float = 60_000.0,
-        cw_client_factory: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep_fn: Callable[[float], Awaitable[None]] = anyio.sleep,
     ) -> None:
         self._level = level
-        self._namespace = namespace
+        self._sink: MetricsSink = sink if sink is not None else NullSink()
         self._upload_interval = upload_interval_ms / 1000.0
-        self._cw_client_factory = cw_client_factory
         self._clock = clock
         self._sleep_fn = sleep_fn
 
         self._registry: dict[MetricKey, Metric] = {}
         self._tg: TaskGroup | None = None
         self._state: _UploadState | None = None
-        self._client_ctx: AbstractAsyncContextManager[Any] | None = None
         self._closed = False
 
     # ─── Lifecycle ─────────────────────────────────────────────────────────
 
     async def __aenter__(self) -> MetricsManager:
         if self._level is MetricsLevel.NONE:
-            # Fast path: no task group, no client, no upload task. The
-            # manager is a no-op container.
+            # Fast path: no task group, no sink entry, no upload task.
             return self
+        await self._sink.__aenter__()
         tg = anyio.create_task_group()
         await tg.__aenter__()
         self._tg = tg
         state = _UploadState()
         self._state = state
-        if self._cw_client_factory is not None:
-            client_ctx = self._cw_client_factory()
-            state.cw_client = await client_ctx.__aenter__()
-            self._client_ctx = client_ctx
         scope = anyio.CancelScope()
         state.scope = scope
-        tg.start_soon(self._upload_loop, scope, state.cw_client)
+        tg.start_soon(self._upload_loop, scope)
         return self
 
     async def __aexit__(
@@ -251,20 +268,17 @@ class MetricsManager:
         if self._level is MetricsLevel.NONE:
             return
         self._closed = True
+        # Final flush before tearing down so we don't lose the last window.
+        await self.flush()
         state = self._state
         assert state is not None
-        # Final upload before tearing down so we don't lose the last window.
-        if state.cw_client is not None:
-            await self._upload_now(state.cw_client)
         assert state.scope is not None
         state.scope.cancel()
         tg = self._tg
         self._tg = None
         assert tg is not None
         await tg.__aexit__(exc_type, exc, tb)
-        ctx = self._client_ctx
-        if ctx is not None:
-            await ctx.__aexit__(exc_type, exc, tb)
+        await self._sink.__aexit__(exc_type, exc, tb)
 
     # ─── Public API ────────────────────────────────────────────────────────
 
@@ -273,8 +287,8 @@ class MetricsManager:
         return self._level
 
     @property
-    def namespace(self) -> str:
-        return self._namespace
+    def sink(self) -> MetricsSink:
+        return self._sink
 
     def put(
         self,
@@ -289,6 +303,9 @@ class MetricsManager:
 
         When ``level == SUMMARY`` the ``shard_id`` and ``error_code``
         dimensions are dropped at lookup so the registry stays coarse.
+
+        When the underlying sink implements :class:`EventfulMetricsSink`,
+        :meth:`record` is invoked synchronously with a :class:`MetricEvent`.
         """
         if self._level is MetricsLevel.NONE:
             return
@@ -306,9 +323,23 @@ class MetricsManager:
             metric = Metric(key, clock=self._clock)
             self._registry[key] = metric
         metric.put(value)
+        sink = self._sink
+        if isinstance(sink, EventfulMetricsSink):
+            sink.record(
+                MetricEvent(
+                    name=name,
+                    value=value,
+                    timestamp=self._clock(),
+                    dimensions=key.dimensions(),
+                )
+            )
 
     def snapshot(self) -> dict[MetricKey, tuple[int, float, float, float]]:
-        """Return ``(count, sum, min, max)`` per metric for the live window."""
+        """Return ``(count, sum, min, max)`` per metric for the live window.
+
+        Kept for backward compatibility with in-process inspectors (tests,
+        embedded callers). Sinks consume :meth:`snapshots` instead.
+        """
         result: dict[MetricKey, tuple[int, float, float, float]] = {}
         for key, metric in self._registry.items():
             stats = metric.stats()
@@ -316,53 +347,45 @@ class MetricsManager:
                 result[key] = stats
         return result
 
+    def snapshots(self) -> tuple[MetricSnapshot, ...]:
+        """Build :class:`MetricSnapshot` instances for the live window."""
+        out: list[MetricSnapshot] = []
+        for key, metric in self._registry.items():
+            stats = metric.stats()
+            if stats is None:
+                continue
+            count, total, mn, mx = stats
+            ws, we = metric.window_bounds()
+            out.append(
+                MetricSnapshot(
+                    name=key.name,
+                    count=count,
+                    sum=total,
+                    min=mn,
+                    max=mx,
+                    dimensions=key.dimensions(),
+                    window_start=ws,
+                    window_end=we,
+                )
+            )
+        return tuple(out)
+
+    async def flush(self) -> None:
+        """Build a snapshot and call ``sink.export``. No-op when level is NONE."""
+        if self._level is MetricsLevel.NONE:
+            return
+        snaps = self.snapshots()
+        if not snaps:
+            return
+        await self._sink.export(snaps)
+
     # ─── Internals ─────────────────────────────────────────────────────────
 
-    async def _upload_loop(self, scope: anyio.CancelScope, cw_client: Any) -> None:
-        # ``cw_client`` is captured at task-spawn time; when no factory was
-        # provided the loop still runs but skips the upload step so the
-        # in-memory snapshot stays alive for tests/inspection.
+    async def _upload_loop(self, scope: anyio.CancelScope) -> None:
         with scope:
             while True:
                 await self._sleep_fn(self._upload_interval)
-                if cw_client is not None:
-                    await self._upload_now(cw_client)
-
-    async def _upload_now(self, cw_client: Any) -> None:
-        snap = self.snapshot()
-        if not snap:
-            return
-        datums = [self._key_to_datum(key, stats) for key, stats in snap.items()]
-        for i in range(0, len(datums), _CLOUDWATCH_BATCH_LIMIT):
-            chunk = datums[i : i + _CLOUDWATCH_BATCH_LIMIT]
-            await cw_client.put_metric_data(
-                Namespace=self._namespace,
-                MetricData=chunk,
-            )
-
-    def _key_to_datum(
-        self,
-        key: MetricKey,
-        stats: tuple[int, float, float, float],
-    ) -> dict[str, Any]:
-        count, total, mn, mx = stats
-        dims: list[dict[str, str]] = []
-        if key.stream is not None:
-            dims.append({"Name": "StreamName", "Value": key.stream})
-        if key.shard_id is not None:
-            dims.append({"Name": "ShardId", "Value": key.shard_id})
-        if key.error_code is not None:
-            dims.append({"Name": "ErrorCode", "Value": key.error_code})
-        return {
-            "MetricName": key.name,
-            "Dimensions": dims,
-            "StatisticValues": {
-                "SampleCount": float(count),
-                "Sum": total,
-                "Minimum": mn,
-                "Maximum": mx,
-            },
-        }
+                await self.flush()
 
 
 __all__ = [

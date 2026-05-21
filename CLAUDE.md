@@ -114,9 +114,15 @@ Translation table:
 - **Package manager is `uv`**.
 - **Lint+format is `ruff`** with rules in `pyproject.toml`.
 - **No runtime deps in Phase 1.** Pure stdlib + hashlib.
-- **Metrics off by default.** Phase 7 ships in-process counters with optional
-  CloudWatch upload. `MetricsManager` is a no-op when `level=NONE` —
-  zero-overhead path. CloudWatch upload is asyncio-only (aiobotocore).
+- **Metrics off by default.** Phase 7 ships in-process counters with
+  pluggable flushing. `MetricsManager` is a no-op when `level=NONE` —
+  zero-overhead path.
+- **Metrics are vendor-neutral via a `MetricsSink` Protocol.** The library
+  knows nothing about CloudWatch, Datadog, or OpenTelemetry — those are
+  first-party sinks behind `aiokpl[otel]` / `aiokpl[datadog]` extras
+  (CloudWatch is bundled since `aiobotocore` is already a dep). Default
+  sink is `NullSink` (zero overhead). Sinks plug in via
+  `Config.metrics_sink`.
 
 ---
 
@@ -375,7 +381,8 @@ recognizability. Defaults match the C++ KPL unless noted.
 | `request_timeout_ms` | 6000 | |
 | `max_connections` | 24 | aiobotocore session |
 | `metrics_level` | `"none"` | `"summary"`, `"detailed"` |
-| `metrics_upload_delay_ms` | 60000 | |
+| `metrics_sink` | `None` | any `MetricsSink`; default `NullSink` |
+| `metrics_upload_interval_ms` | 60000 | how often the Manager flushes |
 
 Skip from C++ config (not applicable): `enable_core_dumps`, `native_process_*`,
 `kinesis_endpoint` (use boto3 endpoint URL), `verify_certificate` (boto session).

@@ -22,6 +22,15 @@ from aiokpl.result import Attempt, RecordResult
 from aiokpl.retrier import Retrier
 from aiokpl.sender import PerRecordOutcome, Sender, SendOutcome
 from aiokpl.shard_map import Shard, ShardMap, ShardMapState
+from aiokpl.sinks import (
+    CloudWatchSink,
+    EventfulMetricsSink,
+    InMemorySink,
+    MetricEvent,
+    MetricSnapshot,
+    MetricsSink,
+    NullSink,
+)
 from aiokpl.token_bucket import TokenBucket
 
 __all__ = [
@@ -31,13 +40,20 @@ __all__ = [
     "Attempt",
     "Batch",
     "Batchable",
+    "CloudWatchSink",
     "Collector",
     "Config",
     "DecodedRecord",
+    "EventfulMetricsSink",
+    "InMemorySink",
     "Limiter",
+    "MetricEvent",
     "MetricKey",
+    "MetricSnapshot",
     "MetricsLevel",
     "MetricsManager",
+    "MetricsSink",
+    "NullSink",
     "Outcome",
     "PerRecordOutcome",
     "Producer",

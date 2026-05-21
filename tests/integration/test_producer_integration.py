@@ -127,6 +127,9 @@ async def test_producer_metrics_counts_after_100_records(kinesis_client: Any) ->
     kinesis_client.create_stream(StreamName=stream_name, ShardCount=2)
     try:
         await anyio.to_thread.run_sync(_wait_stream_active, kinesis_client, stream_name)
+        from aiokpl.sinks import InMemorySink
+
+        sink = InMemorySink()
         cfg = Config(
             region=region,
             endpoint_url=endpoint,
@@ -136,12 +139,12 @@ async def test_producer_metrics_counts_after_100_records(kinesis_client: Any) ->
             record_max_buffered_time_ms=50.0,
             record_ttl_ms=60_000.0,
             max_outstanding_records=200,
-            # DETAILED level captures every dim; cw_client_factory stays at
-            # the default aiobotocore factory but with no real CloudWatch
-            # endpoint behind it, the periodic uploader will fail silently.
-            # We assert exclusively on the in-process snapshot.
+            # DETAILED level captures every dim; flush onto an InMemorySink so
+            # we can assert post-flush exports without hitting a real
+            # CloudWatch endpoint.
             metrics_level=MetricsLevel.DETAILED,
-            metrics_cloudwatch_enabled=False,
+            metrics_sink=sink,
+            metrics_upload_interval_ms=60_000.0,
         )
         outcomes: list[Any] = []
         rng = random.Random(0xC0FFEE)
@@ -161,6 +164,8 @@ async def test_producer_metrics_counts_after_100_records(kinesis_client: Any) ->
                 for o in outcomes:
                     results.append(await o.wait())
             snap = producer.metrics.snapshot()
+            # Force one flush so the sink captures snapshots before exit.
+            await producer.metrics.flush()
 
         received = sum(
             stats[0] for key, stats in snap.items() if key.name == NAME_USER_RECORDS_RECEIVED
@@ -173,6 +178,11 @@ async def test_producer_metrics_counts_after_100_records(kinesis_client: Any) ->
         assert received == n_records
         assert put == success_count
         assert request_times > 0
+        # Post-flush exports also surfaced through the InMemorySink.
+        sink_names = {s.name for s in sink.all_snapshots}
+        assert NAME_USER_RECORDS_RECEIVED in sink_names
+        assert NAME_USER_RECORDS_PUT in sink_names
+        assert NAME_REQUEST_TIME in sink_names
     finally:
         with contextlib.suppress(Exception):
             kinesis_client.delete_stream(StreamName=stream_name, EnforceConsumerDeletion=True)

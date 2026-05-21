@@ -63,8 +63,15 @@ docs = [
   "mkdocs-section-index>=0.3",
   "pymdown-extensions>=10.7",
 ]
+otel = [
+  "opentelemetry-api>=1.27",
+  "opentelemetry-sdk>=1.27",
+]
+datadog = [
+  "datadog-api-client>=2.30",
+]
 dev = [
-  "aiokpl[test,integration,lint,docs]",
+  "aiokpl[test,integration,lint,docs,otel,datadog]",
   "nox>=2024.4",
   "pre-commit>=3.7",
 ]

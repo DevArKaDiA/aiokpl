@@ -116,6 +116,7 @@ nav:
       - Setup: dev/setup.md
       - Testing: dev/testing.md
       - Why anyio: dev/anyio.md
+      - Custom sinks: dev/sinks.md
       - Releasing: dev/releasing.md
 
 extra:

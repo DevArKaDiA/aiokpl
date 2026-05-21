@@ -130,22 +130,12 @@ class _FakeClientCtx:
 class _FakeSession:
     def __init__(self, client: _FakeClient) -> None:
         self._client = client
-        self._cw_client_ctx: Any = None
         self.create_client_kwargs: dict[str, Any] = {}
 
-    def set_cw_ctx(self, ctx: Any) -> None:
-        self._cw_client_ctx = ctx
-
     def create_client(self, service_name: str, **kwargs: Any) -> Any:
-        if service_name == "kinesis":
-            self.create_client_kwargs = kwargs
-            return _FakeClientCtx(self._client)
-        assert service_name == "cloudwatch"
-        assert self._cw_client_ctx is not None
-        return self._cw_client_ctx
-
-
-_test_sessions: dict[int, _FakeSession] = {}
+        assert service_name == "kinesis"
+        self.create_client_kwargs = kwargs
+        return _FakeClientCtx(self._client)
 
 
 @pytest.fixture
@@ -157,13 +147,7 @@ def fake_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeClient]:
         return session
 
     monkeypatch.setattr(producer_mod.aiobotocore.session, "get_session", fake_get_session)
-    _test_sessions[id(client)] = session
     yield client
-    _test_sessions.pop(id(client), None)
-
-
-def _session_for(client: _FakeClient) -> _FakeSession:
-    return _test_sessions[id(client)]
 
 
 def _ok_response(seq: str = "seq-1", shard: str = "shardId-0") -> dict[str, Any]:
@@ -649,25 +633,6 @@ async def test_finish_callback_handles_unknown_buffered(fake_client: _FakeClient
 # ────────────────────────────────────────────────────────────────────────────
 
 
-class _FakeCWClient:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    async def put_metric_data(self, **kwargs: Any) -> None:
-        self.calls.append(kwargs)
-
-
-class _FakeCWClientCtx:
-    def __init__(self, client: _FakeCWClient) -> None:
-        self._client = client
-
-    async def __aenter__(self) -> _FakeCWClient:
-        return self._client
-
-    async def __aexit__(self, *_: Any) -> None:
-        return None
-
-
 async def test_producer_metrics_property_default_none(fake_client: _FakeClient) -> None:
     cfg = _cfg()
     async with Producer(cfg) as producer:
@@ -684,12 +649,14 @@ async def test_producer_metrics_records_user_records_received_and_put(
         NAME_USER_RECORDS_RECEIVED,
         MetricsLevel,
     )
+    from aiokpl.sinks import InMemorySink
 
     fake_client.queue_put(_ok_response("seq-A", "shardId-0"))
+    sink = InMemorySink()
     cfg = _cfg(
         record_max_buffered_time_ms=20.0,
         metrics_level=MetricsLevel.DETAILED,
-        metrics_cloudwatch_enabled=False,
+        metrics_sink=sink,
         metrics_upload_interval_ms=60_000.0,
     )
     async with Producer(cfg) as producer:
@@ -707,24 +674,26 @@ async def test_producer_metrics_records_user_records_received_and_put(
         assert NAME_USER_RECORDS_RECEIVED in keys_by_name
         assert NAME_USER_RECORDS_PUT in keys_by_name
         assert NAME_REQUEST_TIME in keys_by_name
+    # Final __aexit__ flush surfaces snapshots in the sink.
+    names = {s.name for s in sink.all_snapshots}
+    assert NAME_USER_RECORDS_RECEIVED in names
 
 
-async def test_pending_reporter_and_cw_factory(
+async def test_pending_reporter_emits_with_injected_sink(
     fake_client: _FakeClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Exercises both the periodic pending reporter and the CloudWatch
-    # client factory path (lines covered: `_make_cw_client_factory` body
-    # and `_pending_reporter` loop).
-    cw_client = _FakeCWClient()
-    _session_for(fake_client).set_cw_ctx(_FakeCWClientCtx(cw_client))
-    # Shrink the pending reporter interval so a single yield drives a tick.
-    monkeypatch.setattr(producer_mod, "_PENDING_REPORT_INTERVAL_S", 0.001)
+    # Exercises the periodic pending reporter and the injected-sink path
+    # (lines covered: ``_pending_reporter`` loop + sink lifecycle wiring).
     from aiokpl.metrics import NAME_USER_RECORDS_PENDING, MetricsLevel
+    from aiokpl.sinks import InMemorySink
 
+    monkeypatch.setattr(producer_mod, "_PENDING_REPORT_INTERVAL_S", 0.001)
+    sink = InMemorySink()
     cfg = _cfg(
         record_max_buffered_time_ms=20.0,
         metrics_level=MetricsLevel.DETAILED,
+        metrics_sink=sink,
         metrics_upload_interval_ms=3_600_000.0,  # effectively never
     )
     async with Producer(cfg) as producer:

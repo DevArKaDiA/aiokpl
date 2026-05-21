@@ -53,6 +53,7 @@ from aiokpl.result import RecordResult
 from aiokpl.retrier import EXPIRED_ERROR_CODE, EXPIRED_ERROR_MESSAGE, Retrier
 from aiokpl.sender import PerRecordOutcome, Sender, SendOutcome
 from aiokpl.shard_map import ShardMap
+from aiokpl.sinks import NullSink
 
 _PENDING_REPORT_INTERVAL_S = 5.0
 
@@ -96,13 +97,11 @@ class Producer:
         self._outstanding = 0
         self._task_group: TaskGroup | None = None
         self._closed = False
+        sink = config.metrics_sink if config.metrics_sink is not None else NullSink()
         self._metrics = MetricsManager(
             level=config.metrics_level,
-            namespace=config.metrics_namespace,
+            sink=sink,
             upload_interval_ms=config.metrics_upload_interval_ms,
-            cw_client_factory=self._make_cw_client_factory()
-            if config.metrics_level is not MetricsLevel.NONE and config.metrics_cloudwatch_enabled
-            else None,
         )
 
     # ─── Lifecycle ─────────────────────────────────────────────────────────
@@ -342,26 +341,6 @@ class Producer:
         # aggregator falls back to single-record mode until READY.
         await shard_map.start()
         return pipeline
-
-    def _make_cw_client_factory(self) -> Any:
-        # Builds a fresh aiobotocore CloudWatch client every time it's
-        # called. The MetricsManager only invokes it once at __aenter__ when
-        # ``level != NONE``.
-        cfg = self._config
-
-        def factory() -> Any:
-            session = aiobotocore.session.get_session()
-            return session.create_client(
-                "cloudwatch",
-                region_name=cfg.region,
-                endpoint_url=cfg.endpoint_url,
-                verify=cfg.verify_ssl,
-                aws_access_key_id=cfg.aws_access_key_id,
-                aws_secret_access_key=cfg.aws_secret_access_key,
-                aws_session_token=cfg.aws_session_token,
-            )
-
-        return factory
 
     async def _pending_reporter(self) -> None:
         # Periodic gauge of in-flight records, mirroring the C++ KPL's

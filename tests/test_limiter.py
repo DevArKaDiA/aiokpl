@@ -312,15 +312,18 @@ async def test_limiter_emits_buffered_time_and_expired_metrics() -> None:
     clock = FakeClock(t=5.0)
     c = Collected()
     mgr = MetricsManager(level=MetricsLevel.DETAILED, clock=clock)
-    async with mgr, Limiter(
-        on_admit=c.on_admit,
-        on_expired=c.on_expired,
-        drain_interval_ms=1.0,
-        expiration_ms=10_000.0,
-        clock=clock,
-        metrics=mgr,
-        stream_name="metricstream",
-    ) as lim:
+    async with (
+        mgr,
+        Limiter(
+            on_admit=c.on_admit,
+            on_expired=c.on_expired,
+            drain_interval_ms=1.0,
+            expiration_ms=10_000.0,
+            clock=clock,
+            metrics=mgr,
+            stream_name="metricstream",
+        ) as lim,
+    ):
         buffered = _BufferedRecord(
             user_record=UserRecord(partition_key="pk", data=b"x"),
             deadline=0.0,
@@ -339,17 +342,20 @@ async def test_limiter_emits_buffered_time_and_expired_metrics() -> None:
     clock_b = FakeClock(t=0.0)
     c2 = Collected()
     mgr2 = MetricsManager(level=MetricsLevel.DETAILED, clock=clock_b)
-    async with mgr2, Limiter(
-        on_admit=c2.on_admit,
-        on_expired=c2.on_expired,
-        drain_interval_ms=1.0,
-        expiration_ms=100.0,
-        records_per_sec_per_shard=0.0,
-        bytes_per_sec_per_shard=0.0,
-        clock=clock_b,
-        metrics=mgr2,
-        stream_name="metricstream",
-    ) as lim2:
+    async with (
+        mgr2,
+        Limiter(
+            on_admit=c2.on_admit,
+            on_expired=c2.on_expired,
+            drain_interval_ms=1.0,
+            expiration_ms=100.0,
+            records_per_sec_per_shard=0.0,
+            bytes_per_sec_per_shard=0.0,
+            clock=clock_b,
+            metrics=mgr2,
+            stream_name="metricstream",
+        ) as lim2,
+    ):
         buffered_b = _BufferedRecord(
             user_record=UserRecord(partition_key="pk", data=b"x"),
             deadline=0.0,

@@ -1,30 +1,64 @@
-# Phase 7 — CloudWatch metrics
+# Phase 7 — Vendor-neutral metrics
 
-In-process metrics with optional periodic CloudWatch upload. Off by default,
-zero overhead when off. Mirrors the C++ KPL's `aws/metrics/metrics_manager.*`
-without the IPC layer.
+aiokpl emits **semantic events**. The destination — CloudWatch, OpenTelemetry,
+Datadog, or none — is a pluggable sink. The library itself knows nothing
+about any vendor: it builds rolling-window aggregates and hands them to the
+sink you plug in.
+
+## Design
+
+```
+stages.put("UserRecordsPut", 1.0, stream=...)
+        │
+        ▼
+MetricsManager  ── rolling 60 s windows per (name, dims)
+        │
+        ▼  every upload_interval_ms
+   sink.export([MetricSnapshot, ...])
+        │
+        ▼
+   CloudWatch / OTLP / Prometheus / Datadog / your own backend
+```
+
+A sink is anything that satisfies the
+[`MetricsSink`][aiokpl.sinks.MetricsSink] Protocol:
+
+```python
+from aiokpl.sinks import MetricSnapshot, MetricsSink
+
+class MyBackend:
+    async def export(self, snapshots):
+        for s in snapshots:
+            ...
+
+    async def __aenter__(self): return self
+    async def __aexit__(self, *exc): ...
+```
+
+If your sink wants per-event resolution (not just aggregated snapshots),
+implement [`EventfulMetricsSink`][aiokpl.sinks.EventfulMetricsSink] too:
+`MetricsManager` will call `sink.record(event)` synchronously inside
+`MetricsManager.put`. Note that `record` must be sync — async work belongs
+in `export`.
 
 ## Toggle
 
-Metrics are opt-in via `Config`:
-
 ```python
 from aiokpl import Config, MetricsLevel, Producer
+from aiokpl.sinks import InMemorySink
 
 cfg = Config(
     region="us-east-1",
     metrics_level=MetricsLevel.DETAILED,
-    metrics_namespace="my-app/aiokpl",
+    metrics_sink=InMemorySink(),         # or any MetricsSink
     metrics_upload_interval_ms=60_000,
-    # metrics_cloudwatch_enabled=False to keep in-process counters only.
 )
 async with Producer(cfg) as producer:
     ...
-    snap = producer.metrics.snapshot()
 ```
 
-`MetricsLevel.NONE` is the default. At `NONE`, `MetricsManager.put()` is a
-no-op, no CloudWatch client is created, and no upload task is spawned.
+`metrics_sink=None` (the default) uses [`NullSink`][aiokpl.sinks.NullSink]:
+zero overhead, no network, no allocations.
 
 ## Levels
 
@@ -32,66 +66,117 @@ no-op, no CloudWatch client is created, and no upload task is spawned.
 |---|---|---|
 | `NONE` | n/a (no-op) | Default. Zero overhead. |
 | `SUMMARY` | `stream` | Coarse dashboards, low cardinality. |
-| `DETAILED` | `stream`, `shard_id`, `error_code` | Per-shard alerting, per-code error trends. |
+| `DETAILED` | `stream`, `shard`, `error_code` | Per-shard alerting. |
 
-## Metric names
+## First-party sinks
 
-Names match the C++ KPL constants verbatim (see
-`aws/metrics/metrics_constants.h`) so operators can reuse existing
-dashboards.
+=== "Off (default)"
 
-| Name | Unit | Where it fires |
-|---|---|---|
-| `UserRecordsReceived` | count | One per `put_record` (`Aggregator.build_buffered`). |
-| `UserRecordsPut` | count | One per terminal success (`Retrier._finish_success`). |
-| `UserRecordsDataPut` | bytes | Per-success, value = `len(data)`. |
-| `UserRecordsPending` | gauge | Sampled every 5 s by the Producer. |
-| `KinesisRecordsPut` | count | One per successfully-routed AggregatedRecord. |
-| `KinesisRecordsDataPut` | bytes | Per-success, value = `batch.size`. |
-| `AllErrors` | count | Any retrier classification that records an error. |
-| `ErrorsByCode` | count | Same as above, dimensioned by `error_code`. |
-| `RetriesPerRecord` | distribution | `len(attempts) - 1` at terminal success. |
-| `BufferedTime` | ms | Limiter admits → time since the earliest item arrived. |
-| `RequestTime` | ms | Sender's PutRecords latency. |
-| `ExpiredRecords` | count | Limiter expiry path. |
+    ```python
+    cfg = Config(region="us-east-1")   # metrics_sink defaults to None → NullSink
+    ```
 
-## CloudWatch payload format
+=== "CloudWatch"
 
-Each metric uploads as one `MetricDatum` with:
+    ```python
+    from aiokpl.sinks import CloudWatchSink
 
-- `MetricName`
-- `Dimensions` — populated from the live `MetricKey` (`StreamName`, `ShardId`,
-  `ErrorCode`, in that order, only the ones that are set).
-- `StatisticValues` — `SampleCount`, `Sum`, `Minimum`, `Maximum` over the
-  rolling 60 s window.
+    cfg = Config(
+        region="us-east-1",
+        metrics_level=MetricsLevel.DETAILED,
+        metrics_sink=CloudWatchSink(
+            region="us-east-1",
+            namespace="my-app/aiokpl",
+        ),
+    )
+    ```
 
-Chunking: CloudWatch caps `PutMetricData` at 1000 entries per call. When a
-snapshot has more, `MetricsManager` splits into multiple sequential calls.
+    Bundled because `aiobotocore` is already a runtime dep (Kinesis client).
+    Dimension translation: `stream` → `StreamName`, `shard` → `ShardId`,
+    `error_code` → `ErrorCode`. Snapshots upload as `StatisticValues`
+    payloads, chunked at the 1000-entry CloudWatch limit.
 
-## Internals
+=== "OpenTelemetry"
 
-- `_Accumulator` is a 60 s rolling window of integer-second buckets, each a
-  `(count, sum, min, max)` quad. Buckets older than the window are dropped
-  lazily on the next `put` or `stats`.
-- `MetricsManager.__aenter__` spawns the upload loop only when
-  `level != NONE`. The loop awaits `anyio.sleep(upload_interval_ms / 1000)`
-  and posts a snapshot per tick. `__aexit__` drains one final upload before
-  cancelling the task.
-- The Producer threads the same `MetricsManager` into every stage
-  (`Aggregator`, `Limiter`, `Sender`, `Retrier`). The stages call
-  `metrics.put(...)` unconditionally; the manager itself short-circuits at
-  `NONE`. That keeps the toggle centralised.
+    Install: `pip install 'aiokpl[otel]'`
+
+    ```python
+    from opentelemetry import metrics as otel_metrics
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+    from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+
+    reader = PeriodicExportingMetricReader(OTLPMetricExporter())
+    otel_metrics.set_meter_provider(MeterProvider(metric_readers=[reader]))
+
+    from aiokpl.sinks.opentelemetry import OpenTelemetrySink
+
+    cfg = Config(
+        region="us-east-1",
+        metrics_level=MetricsLevel.DETAILED,
+        metrics_sink=OpenTelemetrySink(instrument_prefix="aiokpl."),
+    )
+    ```
+
+    Recommended path for new deployments — it brings the full exporter
+    ecosystem (Prometheus, OTLP collector, Honeycomb, Grafana, …).
+
+=== "Datadog"
+
+    Install: `pip install 'aiokpl[datadog]'`. Set `DD_API_KEY` /
+    `DD_APP_KEY` in the environment, or pass them explicitly.
+
+    ```python
+    from aiokpl.sinks.datadog import DatadogSink
+
+    cfg = Config(
+        region="us-east-1",
+        metrics_level=MetricsLevel.DETAILED,
+        metrics_sink=DatadogSink(site="datadoghq.com", metric_prefix="aiokpl."),
+    )
+    ```
+
+    Counts go to the `count` API, distributions to
+    `submit_distribution_points`, gauges to `gauge`.
+
+## Metric names → instrument types
+
+Names match the C++ KPL constants verbatim
+(`aws/metrics/metrics_constants.h`) so existing dashboards keep working.
+
+| Name | OTel instrument | Datadog type | Where it fires |
+|---|---|---|---|
+| `UserRecordsReceived` | Counter | count | `Aggregator.build_buffered` |
+| `UserRecordsPut` | Counter | count | `Retrier._finish_success` |
+| `UserRecordsDataPut` | Counter | count | per-success, value = `len(data)` |
+| `UserRecordsPending` | UpDownCounter | gauge | sampled every 5 s by the Producer |
+| `KinesisRecordsPut` | Counter | count | per AggregatedRecord success |
+| `KinesisRecordsDataPut` | Counter | count | per-success, value = `batch.size` |
+| `AllErrors` | Counter | count | any retrier error classification |
+| `ErrorsByCode` | Counter | count | dimensioned by `error_code` |
+| `RetriesPerRecord` | Histogram | distribution | `len(attempts) - 1` |
+| `BufferedTime` | Histogram | distribution | Limiter admits |
+| `RequestTime` | Histogram | distribution | Sender's PutRecords latency |
+| `ExpiredRecords` | Counter | count | Limiter expiry |
+
+## In-process inspection
+
+```python
+snap = producer.metrics.snapshot()       # dict[MetricKey, (count, sum, min, max)]
+snaps = producer.metrics.snapshots()     # tuple[MetricSnapshot, ...]
+await producer.metrics.flush()           # force one export through the sink
+```
+
+These accessors stay available regardless of which sink is plugged in;
+sinks that want to expose their own state do so on their own surface (e.g.
+[`InMemorySink.by_name`][aiokpl.sinks.InMemorySink.by_name]).
 
 ## Constraints
 
-- **CloudWatch upload is asyncio-only.** `aiobotocore` is asyncio-only, so
-  uploading inherits that constraint — same as the Sender (see
-  `CLAUDE.md`'s "Concurrency model"). The lower stages' calls to
-  `metrics.put()` stay backend-agnostic because the manager itself uses
-  `anyio.sleep` and `anyio.CancelScope`.
-- **No new runtime deps.** `aiobotocore` was already a Phase 5 dep for the
-  Kinesis client; the CloudWatch client reuses it.
+* **CloudWatch upload is asyncio-only** — `aiobotocore` is asyncio-only.
+  OTel + Datadog + Null + InMemory sinks are backend-agnostic.
+* **No vendor strings in core.** `aiokpl/metrics.py` and `Config` do not
+  mention CloudWatch, Datadog, or OpenTelemetry; provider knobs live on
+  the sink constructor.
 
-See also: [CloudWatch PutMetricData][cw-docs].
-
-[cw-docs]: https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_PutMetricData.html
+See also: [Writing a custom MetricsSink](../dev/sinks.md).

@@ -6,19 +6,20 @@ Exercises:
   single observations, late observations that roll forward, eviction of
   expired buckets.
 * :class:`MetricsLevel` enum identity.
-* :class:`MetricKey` equality + hashing.
+* :class:`MetricKey` equality + hashing + dimensions rendering.
 * :class:`MetricsManager` zero-overhead path when ``level == NONE``: no
-  upload task, no client, snapshot stays empty after :meth:`put`.
+  upload task, no sink entered, snapshot stays empty after :meth:`put`.
 * :class:`MetricsManager` dimension trimming at ``SUMMARY`` vs ``DETAILED``.
-* :class:`MetricsManager` periodic upload via a fake CloudWatch client:
-  payload format (Dimensions + StatisticValues) and chunking at the 1000-
-  metric per-call ceiling.
+* :class:`MetricsManager` periodic flush onto an :class:`InMemorySink`.
+* :class:`MetricsManager` dispatch into an :class:`EventfulMetricsSink` on
+  every :meth:`put`.
 * Clean teardown: final drain + cancellation of the upload task.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import Any
 
 import anyio
@@ -35,6 +36,7 @@ from aiokpl.metrics import (
     MetricsManager,
     _Accumulator,
 )
+from aiokpl.sinks import InMemorySink, MetricEvent, MetricSnapshot, NullSink
 
 # ─── _Accumulator ──────────────────────────────────────────────────────────
 
@@ -50,15 +52,23 @@ class FakeClock:
         self.now += dt
 
 
+@pytest.fixture(params=["asyncio", "trio"])
+def anyio_backend(request: pytest.FixtureRequest) -> str:
+    return str(request.param)
+
+
 def test_accumulator_empty_stats_is_none() -> None:
     acc = _Accumulator(clock=FakeClock())
     assert acc.stats() is None
+    assert acc.window_bounds() == (0.0, 0.0)
 
 
 def test_accumulator_single_put() -> None:
     acc = _Accumulator(clock=FakeClock())
     acc.put(7.5)
     assert acc.stats() == (1, 7.5, 7.5, 7.5)
+    ws, we = acc.window_bounds()
+    assert we == ws + 1.0
 
 
 def test_accumulator_aggregates_within_bucket() -> None:
@@ -85,7 +95,6 @@ def test_accumulator_evicts_old_buckets() -> None:
     acc = _Accumulator(window_seconds=60, clock=clk)
     acc.put(99.0)
     clk.advance(120.0)
-    # The old bucket has expired; the next put rolls into a fresh window.
     assert acc.stats() is None
     acc.put(2.0)
     assert acc.stats() == (1, 2.0, 2.0, 2.0)
@@ -120,9 +129,17 @@ def test_metric_key_equality_and_hash() -> None:
     assert a == b
     assert hash(a) == hash(b)
     assert a != c
-    # Usable as dict key
     d = {a: 1}
     assert d[b] == 1
+
+
+def test_metric_key_dimensions_rendering() -> None:
+    assert MetricKey(name="A").dimensions() == ()
+    assert MetricKey(name="A", stream="s").dimensions() == (("stream", "s"),)
+    assert MetricKey(name="A", shard_id="7").dimensions() == (("shard", "7"),)
+    assert MetricKey(name="A", error_code="X").dimensions() == (("error_code", "X"),)
+    full = MetricKey(name="A", stream="s", shard_id="7", error_code="X").dimensions()
+    assert full == (("stream", "s"), ("shard", "7"), ("error_code", "X"))
 
 
 # ─── Metric ────────────────────────────────────────────────────────────────
@@ -135,6 +152,7 @@ def test_metric_put_and_stats() -> None:
     m.put(2.0)
     m.put(4.0)
     assert m.stats() == (2, 6.0, 2.0, 4.0)
+    assert m.window_bounds()[1] > 0.0
 
 
 # ─── MetricsManager: NONE level ────────────────────────────────────────────
@@ -146,39 +164,37 @@ async def test_manager_none_level_is_noop() -> None:
     async def fake_sleep(t: float) -> None:
         sleep_calls.append(t)
 
-    factory_calls: list[int] = []
-
-    def factory() -> Any:  # pragma: no cover — must NOT be called
-        factory_calls.append(1)
-        raise AssertionError("factory must not be invoked at NONE level")
-
+    sink = InMemorySink()
     mgr = MetricsManager(
         level=MetricsLevel.NONE,
-        cw_client_factory=factory,
+        sink=sink,
         sleep_fn=fake_sleep,
     )
     async with mgr:
         mgr.put(NAME_USER_RECORDS_RECEIVED, 1.0, stream="s", shard_id="0")
         mgr.put(NAME_USER_RECORDS_PUT, 1.0)
+        await mgr.flush()  # also no-op
     assert mgr.snapshot() == {}
+    assert mgr.snapshots() == ()
     assert sleep_calls == []
-    assert factory_calls == []
+    assert sink.exports == ()
 
 
-@pytest.fixture
-def anyio_backend() -> str:
-    # MetricsManager uses anyio.sleep + anyio.CancelScope; both backends
-    # are supported. We still pin to asyncio because aiobotocore (the real
-    # CloudWatch client) is asyncio-only — and tests that wire a real
-    # CW-shaped fake should mirror the production constraint.
-    return "asyncio"
+async def test_manager_default_sink_is_null() -> None:
+    mgr = MetricsManager(level=MetricsLevel.DETAILED)
+    assert isinstance(mgr.sink, NullSink)
+    async with mgr:
+        mgr.put("X", 1.0, stream="s")
+        await mgr.flush()
+    assert mgr.level is MetricsLevel.DETAILED
 
 
 # ─── MetricsManager: SUMMARY vs DETAILED ───────────────────────────────────
 
 
 async def test_manager_summary_drops_shard_and_error_code() -> None:
-    mgr = MetricsManager(level=MetricsLevel.SUMMARY)
+    sink = InMemorySink()
+    mgr = MetricsManager(level=MetricsLevel.SUMMARY, sink=sink)
     async with mgr:
         mgr.put("X", 1.0, stream="s", shard_id="7", error_code="boom")
         mgr.put("X", 1.0, stream="s", shard_id="9", error_code="boom")
@@ -191,7 +207,7 @@ async def test_manager_summary_drops_shard_and_error_code() -> None:
 
 
 async def test_manager_detailed_keeps_all_dims() -> None:
-    mgr = MetricsManager(level=MetricsLevel.DETAILED)
+    mgr = MetricsManager(level=MetricsLevel.DETAILED, sink=InMemorySink())
     async with mgr:
         mgr.put("X", 1.0, stream="s", shard_id="7", error_code="boom")
         mgr.put("X", 1.0, stream="s", shard_id="9", error_code="boom")
@@ -199,52 +215,11 @@ async def test_manager_detailed_keeps_all_dims() -> None:
     assert len(snap) == 2
 
 
-async def test_manager_properties() -> None:
-    mgr = MetricsManager(level=MetricsLevel.DETAILED, namespace="custom")
-    assert mgr.level is MetricsLevel.DETAILED
-    assert mgr.namespace == "custom"
+# ─── MetricsManager: periodic flush onto InMemorySink ──────────────────────
 
 
-# ─── MetricsManager: upload via fake CloudWatch ────────────────────────────
-
-
-class FakeCWClient:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    async def put_metric_data(self, **kwargs: Any) -> None:
-        self.calls.append(kwargs)
-
-
-class FakeCWClientCtx:
-    def __init__(self, client: FakeCWClient) -> None:
-        self._client = client
-        self.entered = False
-        self.exited = False
-
-    async def __aenter__(self) -> FakeCWClient:
-        self.entered = True
-        return self._client
-
-    async def __aexit__(self, *_: Any) -> None:
-        self.exited = True
-
-
-def _make_factory() -> tuple[FakeCWClient, FakeCWClientCtx, Any]:
-    client = FakeCWClient()
-    ctx = FakeCWClientCtx(client)
-
-    def factory() -> FakeCWClientCtx:
-        return ctx
-
-    return client, ctx, factory
-
-
-async def test_manager_uploads_on_interval() -> None:
-    client, ctx, factory = _make_factory()
-
-    # A controllable sleep_fn: the upload loop awaits this; each call we
-    # release just enough to drive one upload cycle.
+async def test_manager_flushes_on_interval_to_sink() -> None:
+    sink = InMemorySink()
     release = anyio.Event()
     done = anyio.Event()
 
@@ -254,9 +229,8 @@ async def test_manager_uploads_on_interval() -> None:
 
     mgr = MetricsManager(
         level=MetricsLevel.DETAILED,
-        namespace="ns",
+        sink=sink,
         upload_interval_ms=10.0,
-        cw_client_factory=factory,
         sleep_fn=fake_sleep,
     )
     async with mgr:
@@ -265,89 +239,104 @@ async def test_manager_uploads_on_interval() -> None:
         release.set()
         with anyio.fail_after(2.0):
             await done.wait()
-        # Yield so the upload task observes ``done`` and posts.
         await anyio.lowlevel.checkpoint()
-    assert ctx.entered and ctx.exited
-    # One periodic + one final upload at __aexit__.
-    assert len(client.calls) >= 1
-    payload = client.calls[0]
-    assert payload["Namespace"] == "ns"
-    data = payload["MetricData"]
-    assert any(d["MetricName"] == NAME_REQUEST_TIME for d in data)
-    for datum in data:
-        assert "Dimensions" in datum
-        sv = datum["StatisticValues"]
-        assert {"SampleCount", "Sum", "Minimum", "Maximum"} <= sv.keys()
+    # At least one periodic + the final __aexit__ flush.
+    assert len(sink.exports) >= 1
+    names = {s.name for s in sink.all_snapshots}
+    assert NAME_REQUEST_TIME in names
+    assert NAME_USER_RECORDS_PUT in names
+    # Snapshots carry dimensions and window bounds.
+    snap_for_req = sink.by_name(NAME_REQUEST_TIME)[0]
+    assert isinstance(snap_for_req, MetricSnapshot)
+    assert snap_for_req.dimensions == (("stream", "s"),)
+    assert snap_for_req.window_end > snap_for_req.window_start
 
 
-async def test_manager_upload_chunks_when_over_limit() -> None:
-    client, _ctx, factory = _make_factory()
-
-    async def immediate_sleep(_t: float) -> None:
-        # Block forever — the periodic upload should not run; we rely on the
-        # __aexit__ final drain to flush the snapshot.
-        await anyio.sleep_forever()
-
-    mgr = MetricsManager(
-        level=MetricsLevel.DETAILED,
-        upload_interval_ms=10.0,
-        cw_client_factory=factory,
-        sleep_fn=immediate_sleep,
-    )
-    async with mgr:
-        # 2500 distinct keys (stream dim varied) > 1000 chunk size.
-        for i in range(2500):
-            mgr.put("X", 1.0, stream=f"s-{i}")
-    # The final drain should split into 3 calls: 1000 + 1000 + 500.
-    assert len(client.calls) == 3
-    sizes = [len(c["MetricData"]) for c in client.calls]
-    assert sizes == [1000, 1000, 500]
-
-
-async def test_manager_upload_skipped_when_no_metrics() -> None:
-    client, _ctx, factory = _make_factory()
+async def test_manager_flush_skipped_when_no_metrics() -> None:
+    sink = InMemorySink()
 
     async def block_sleep(_t: float) -> None:
         await anyio.sleep_forever()
 
     mgr = MetricsManager(
         level=MetricsLevel.DETAILED,
-        cw_client_factory=factory,
+        sink=sink,
         sleep_fn=block_sleep,
     )
     async with mgr:
-        pass  # no observations
-    # Final drain bailed out early; no PutMetricData calls.
-    assert client.calls == []
+        pass
+    assert sink.exports == ()
 
 
-async def test_manager_without_factory_still_runs_loop_without_uploading() -> None:
-    release = anyio.Event()
-    seen = anyio.Event()
+async def test_manager_explicit_flush_drains_sink() -> None:
+    sink = InMemorySink()
 
-    async def fake_sleep(_t: float) -> None:
-        await release.wait()
-        seen.set()
+    async def block_sleep(_t: float) -> None:
+        await anyio.sleep_forever()
 
     mgr = MetricsManager(
         level=MetricsLevel.DETAILED,
-        cw_client_factory=None,
-        sleep_fn=fake_sleep,
+        sink=sink,
+        sleep_fn=block_sleep,
     )
     async with mgr:
         mgr.put("X", 1.0, stream="s")
-        release.set()
-        with anyio.fail_after(2.0):
-            await seen.wait()
-        await anyio.lowlevel.checkpoint()
-        # The in-memory snapshot is unaffected by the absent uploader.
-        assert mgr.snapshot()
+        await mgr.flush()
+        assert len(sink.exports) == 1
+
+
+async def test_manager_uses_null_sink_by_default_and_level_off() -> None:
+    mgr = MetricsManager()
+    assert isinstance(mgr.sink, NullSink)
+    async with mgr:
+        mgr.put("X", 1.0)
+    assert mgr.snapshot() == {}
+
+
+# ─── MetricsManager + EventfulMetricsSink ──────────────────────────────────
+
+
+class CapturingEventfulSink:
+    """Records each event and each export batch."""
+
+    def __init__(self) -> None:
+        self.events: list[MetricEvent] = []
+        self.exports: list[tuple[MetricSnapshot, ...]] = []
+
+    def record(self, event: MetricEvent) -> None:
+        self.events.append(event)
+
+    async def export(self, snapshots: Sequence[MetricSnapshot]) -> None:
+        self.exports.append(tuple(snapshots))
+
+    async def __aenter__(self) -> CapturingEventfulSink:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: Any,
+    ) -> None:
+        return None
+
+
+async def test_manager_dispatches_record_to_eventful_sink() -> None:
+    sink = CapturingEventfulSink()
+    mgr = MetricsManager(level=MetricsLevel.DETAILED, sink=sink)
+    async with mgr:
+        mgr.put("X", 2.5, stream="s", shard_id="7")
+        mgr.put("X", 1.0, stream="s", shard_id="7")
+    assert len(sink.events) == 2
+    assert sink.events[0].name == "X"
+    assert sink.events[0].value == 2.5
+    assert sink.events[0].dimensions == (("stream", "s"), ("shard", "7"))
+
+
+# ─── Snapshot edge cases ──────────────────────────────────────────────────
 
 
 def test_accumulator_second_bucket_min_max_unchanged() -> None:
-    # First bucket records the extremes; the second bucket's observations
-    # are in between. Exercises the False branches of `b.min < mn` and
-    # `b.max > mx` inside the stats loop.
     clk = FakeClock()
     acc = _Accumulator(clock=clk)
     acc.put(0.0)
@@ -359,32 +348,18 @@ def test_accumulator_second_bucket_min_max_unchanged() -> None:
 
 async def test_snapshot_drops_metrics_whose_window_is_empty() -> None:
     clk = FakeClock()
-    mgr = MetricsManager(level=MetricsLevel.DETAILED, clock=clk)
+    sink = InMemorySink()
+    mgr = MetricsManager(level=MetricsLevel.DETAILED, sink=sink, clock=clk)
     async with mgr:
         mgr.put("X", 1.0, stream="s")
-        # Advance past the window so the recorded bucket evicts.
         clk.advance(120.0)
         snap = mgr.snapshot()
+        snaps = mgr.snapshots()
     assert snap == {}
-
-
-def test_key_to_datum_handles_all_dim_combinations() -> None:
-    # Exercise every branch in _key_to_datum: no dims, stream-only,
-    # shard-only, error-only, and all-three.
-    mgr = MetricsManager(level=MetricsLevel.DETAILED)
-    datum_none = mgr._key_to_datum(MetricKey(name="A"), (1, 2.0, 0.0, 5.0))
-    assert datum_none["Dimensions"] == []
-    datum_s = mgr._key_to_datum(MetricKey(name="A", stream="s"), (1, 0.0, 0.0, 0.0))
-    assert datum_s["Dimensions"] == [{"Name": "StreamName", "Value": "s"}]
-    datum_sh = mgr._key_to_datum(MetricKey(name="A", shard_id="7"), (1, 0.0, 0.0, 0.0))
-    assert datum_sh["Dimensions"] == [{"Name": "ShardId", "Value": "7"}]
-    datum_ec = mgr._key_to_datum(MetricKey(name="A", error_code="X"), (1, 0.0, 0.0, 0.0))
-    assert datum_ec["Dimensions"] == [{"Name": "ErrorCode", "Value": "X"}]
+    assert snaps == ()
 
 
 def test_metric_acc_min_max_at_minus_inf_for_negative_values() -> None:
-    # Defensive: ensure the math.inf / -math.inf initialisers work for any
-    # sign of value (negative observations are unusual but legal).
     clk = FakeClock()
     acc = _Accumulator(clock=clk)
     acc.put(-1.0)
