@@ -11,8 +11,11 @@ from aiokpl.aggregation import (
 )
 from aiokpl.aggregator import AggregatedBatch, Aggregator
 from aiokpl.collector import Collector, PutRecordsBatch
+from aiokpl.config import Config
 from aiokpl.hashing import md5_hash_key, parse_explicit_hash_key
 from aiokpl.limiter import Limiter, ShardLimiter
+from aiokpl.outcome import Outcome
+from aiokpl.producer import Producer
 from aiokpl.reducer import Batch, Batchable, Reducer
 from aiokpl.result import Attempt, RecordResult
 from aiokpl.retrier import Retrier
@@ -28,9 +31,12 @@ __all__ = [
     "Batch",
     "Batchable",
     "Collector",
+    "Config",
     "DecodedRecord",
     "Limiter",
+    "Outcome",
     "PerRecordOutcome",
+    "Producer",
     "PutRecordsBatch",
     "RecordResult",
     "Reducer",

@@ -10,6 +10,9 @@
 
 **Pure-Python async Kinesis producer. KPL-equivalent without a native daemon.**
 
+> **v0.1 available** — the full pipeline ships and is exercised end-to-end
+> against `kinesis-mock`. See [Phase 6](docs/phases/phase-6-producer.md).
+
 > A library that respects the shard as the unit of optimization, measures time
 > before size, and treats failures as user-visible information — not noise to hide.
 
@@ -17,8 +20,9 @@
 
 ## Status
 
-**Pre-alpha — design phase.** Not installable, not on PyPI, no code shipped yet.
-See the [Roadmap](#roadmap) below for what's coming.
+**v0.1 — first usable release.** Full async pipeline lands with Phase 6:
+`Producer` → `Aggregator` → `Limiter` → `Collector` → `Sender` → `Retrier`.
+Not on PyPI yet — install via the repo URL.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -28,7 +32,7 @@ See the [Roadmap](#roadmap) below for what's coming.
 | 3 | Reducer, Aggregator, Collector | ✅ Done |
 | 4 | Limiter + TokenBucket | ✅ Done |
 | 5 | Sender + Retrier | ✅ Done |
-| 6 | Producer + lifecycle (first usable release: **v0.1**) | 🚧 Next |
+| 6 | Producer + lifecycle (first usable release: **v0.1**) | ✅ Done |
 | 7 | CloudWatch metrics | 💤 Optional |
 | 8 | Sync bridge | 💤 Optional |
 
@@ -117,12 +121,12 @@ async def main():
         fail_if_throttled=False,
     )
     async with Producer(cfg) as producer:
-        fut = await producer.put_record(
+        outcome = await producer.put_record(
             stream="my-stream",
             partition_key="user-123",
             data=b"hello",
         )
-        result = await fut
+        result = await outcome.wait()
         if result.success:
             print(result.shard_id, result.sequence_number)
         else:

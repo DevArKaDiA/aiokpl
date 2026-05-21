@@ -6,11 +6,11 @@
 > before size, and treats failures as user-visible information — not noise to
 > hide.
 
-!!! warning "Pre-alpha"
-    `aiokpl` is in active design and early implementation. It is not on PyPI
-    yet, the public API may change without notice, and only the codec and
-    shard map are shipped today. See the [Roadmap](phases/index.md) for what
-    is coming and when.
+!!! success "v0.1 available"
+    `aiokpl` ships its first usable release with Phase 6. The full pipeline —
+    `Producer` → `Aggregator` → `Limiter` → `Collector` → `Sender` → `Retrier`
+    — is wired and exercised end-to-end against `kinesis-mock`. See the
+    [Roadmap](phases/index.md) for what's next.
 
 ## Status
 
@@ -19,10 +19,10 @@
 | 0 | Repo scaffolding, design docs | Done |
 | 1 | Aggregation codec (KPL wire format) | Done |
 | 2 | ShardMap + prediction | Done |
-| 3 | Reducer, Aggregator, Collector | Next |
-| 4 | Limiter + TokenBucket | Planned |
-| 5 | Sender + Retrier | Planned |
-| 6 | Producer + lifecycle (first usable release: v0.1) | Planned |
+| 3 | Reducer, Aggregator, Collector | Done |
+| 4 | Limiter + TokenBucket | Done |
+| 5 | Sender + Retrier | Done |
+| 6 | Producer + lifecycle (first usable release: v0.1) | Done |
 | 7 | CloudWatch metrics | Optional |
 | 8 | Sync bridge | Optional |
 
@@ -73,21 +73,20 @@ async def main():
         fail_if_throttled=False,
     )
     async with Producer(cfg) as producer:
-        fut = await producer.put_record(
+        outcome = await producer.put_record(
             stream="my-stream",
             partition_key="user-123",
             data=b"hello",
         )
-        result = await fut
+        result = await outcome.wait()
         if result.success:
             print(result.shard_id, result.sequence_number)
         else:
             print("failed:", result.attempts[-1].error_code)
 
-anyio.run(main)  # works on asyncio (default) or pass backend="trio"
+anyio.run(main)
 ```
 
-!!! info "The `Producer` class is Phase 6"
-    The snippet above shows the **target** public API. Today, only the codec
-    (`encode_aggregated` / `decode_aggregated`) and `ShardMap` are usable
-    directly. Tracking issue: see the [Roadmap](phases/index.md).
+The `Producer` is asyncio-only (aiobotocore is asyncio-only). The lower
+phases (codec, ShardMap, Reducer, Aggregator, Collector, Limiter) remain
+backend-agnostic and are tested on both asyncio and trio.

@@ -259,8 +259,9 @@ async def main():
         result = await fut  # RecordResult(success, shard_id, sequence_number, attempts)
 ```
 
-`put_record` returns an `asyncio.Future[RecordResult]` (resolved when the
-record is finished — success or terminal failure). `flush()` and graceful
+`put_record` returns an `Outcome[RecordResult]` — an anyio-friendly one-shot
+event that replaces `asyncio.Future` so the resolution mechanism stays
+backend-agnostic. Callers `await outcome.wait()`. `flush()` and graceful
 `aclose()` drain in-flight records up to a deadline.
 
 ---
@@ -321,12 +322,21 @@ testable.
 - Tests: every row of the classification table, with `moto` and with hand-built
   fake clients for the wrong-shard cases.
 
-### Phase 6 — Producer + lifecycle
+### Phase 6 — Producer + lifecycle ✅ done (v0.1)
 
 - `aiokpl/producer.py`: `async with Producer(cfg)` wiring. Per-stream pipelines
   in a `dict[str, _StreamPipeline]`. Graceful shutdown: stop intake, drain,
   cancel timers, close aiobotocore session.
-- Backpressure: `max_outstanding_records` knob, `put_record` awaits a semaphore.
+- `aiokpl/config.py`: frozen `Config` dataclass with every tunable.
+- `aiokpl/outcome.py`: `Outcome[T]` — anyio-friendly one-shot value-bearing
+  event. Replaces `asyncio.Future` so the Outcome itself stays
+  backend-portable (the surrounding `Producer` is asyncio-only because
+  `aiobotocore` is asyncio-only).
+- Backpressure: `max_outstanding_records` knob, `put_record` awaits a
+  semaphore released by the Retrier's terminal callback.
+- Expired-batch path: synthesize `SendOutcome(request_error=("Expired", …))`
+  and route through the same Retrier classification as network errors.
+- Public API: `from aiokpl import Producer, Config, Outcome`.
 
 ### Phase 7 — Metrics (optional, last)
 

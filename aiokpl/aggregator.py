@@ -227,20 +227,43 @@ class Aggregator:
         If the reducer returns a closed batch (limit-trigger), dispatch it to
         ``on_batch_ready`` immediately. Deadline-triggered closures go through
         the same callback wired into each reducer.
+
+        Back-compat wrapper over :meth:`submit` that discards the buffered
+        record handle.
+        """
+        await self.submit(user_record)
+
+    def build_buffered(self, user_record: UserRecord) -> _BufferedRecord:
+        """Build the :class:`_BufferedRecord` for ``user_record`` *without* routing.
+
+        Used by the Producer so it can register a buffered → Outcome mapping
+        before calling :meth:`put_buffered`. Splitting build from route closes
+        a race where a synchronous flush would otherwise fire the terminal
+        callback against a record we have not yet bound an Outcome to.
         """
         if user_record.explicit_hash_key is not None:
             hash_key = parse_explicit_hash_key(user_record.explicit_hash_key)
         else:
             hash_key = md5_hash_key(user_record.partition_key)
-
         now = self._clock()
-        buffered = _BufferedRecord(
+        return _BufferedRecord(
             user_record=user_record,
             deadline=now + self._buffered_time,
             hash_key=hash_key,
             arrival_time=now,
         )
+
+    async def submit(self, user_record: UserRecord) -> _BufferedRecord:
+        """Like :meth:`put` but returns the routed :class:`_BufferedRecord`.
+
+        Equivalent to ``put`` but exposes the buffered handle to the caller
+        so the Producer can correlate the record with its user-facing
+        :class:`aiokpl.outcome.Outcome`. The buffered record is built first,
+        then routed via :meth:`put_buffered`.
+        """
+        buffered = self.build_buffered(user_record)
         await self.put_buffered(buffered)
+        return buffered
 
     async def put_buffered(self, buffered: _BufferedRecord) -> None:
         """Re-entry point used by the Retrier to re-enqueue a record.
