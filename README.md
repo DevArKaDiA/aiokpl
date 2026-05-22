@@ -34,7 +34,7 @@ Not on PyPI yet — install via the repo URL.
 | 5 | Sender + Retrier | ✅ Done |
 | 6 | Producer + lifecycle (first usable release: **v0.1**) | ✅ Done |
 | 7 | CloudWatch metrics (opt-in, default off) | ✅ Done |
-| 8 | Sync bridge | 🚧 Next |
+| 8 | Sync bridge (`SyncProducer`) | ✅ Done |
 
 ---
 
@@ -105,7 +105,6 @@ The full design rationale lives in [`CLAUDE.md`](./CLAUDE.md).
 
 ### What v0.1 will NOT do
 
-- No sync API (Phase 8).
 - No producer-side consumer / KCL replacement.
 - No native binary, ever. No subprocess, no IPC, no protobuf framing.
 - No Python < 3.10.
@@ -144,6 +143,28 @@ anyio.run(main)  # works on asyncio (default) or pass backend="trio"
 `put_record()` returns an awaitable future. It resolves when the record
 reaches a terminal state — success or final failure — and the `attempts`
 list always carries the full retry history.
+
+### Sync usage
+
+For callers without an async event loop (Flask/Django handlers, scripts,
+Jupyter), use `SyncProducer`:
+
+```python
+from aiokpl import Config, SyncProducer
+
+with SyncProducer(Config(region="us-east-1")) as producer:
+    outcome = producer.put_record(
+        stream="my-stream",
+        partition_key="user-123",
+        data=b"hello",
+    )
+    result = outcome.wait(timeout=5.0)
+```
+
+Under the hood it spins up an `anyio` event loop on a background thread via
+`anyio.from_thread.start_blocking_portal()` and runs the async `Producer`
+there. `put_record` is thread-safe; `wait()` and `flush()` accept timeouts.
+See [Phase 8 docs](docs/phases/phase-8-sync.md).
 
 ---
 
@@ -221,9 +242,13 @@ Phased on purpose. Each phase ships something testable on its own.
   60 s window, periodic upload via `aiobotocore`. Opt-in via
   `Config.metrics_level`; default `NONE` is a zero-overhead no-op.
 
-### Phase 8 — Sync bridge (optional)  🚧 next
+### Phase 8 — Sync bridge ✅
 
-- `Producer.sync()` for synchronous callers (no async runtime required).
+- `SyncProducer` wraps the async `Producer` behind
+  `anyio.from_thread.start_blocking_portal()` so plain blocking code
+  (Flask/Django/Jupyter/scripts) can submit records and wait for outcomes
+  without an async event loop. Thread-safe `put_record`, timeouts on
+  `wait()` and `flush()`.
 
 ---
 
@@ -234,7 +259,8 @@ Phased on purpose. Each phase ships something testable on its own.
   match the **on-the-wire aggregation format** Kinesis sees.
 - KCL / consumer side. Producer only.
 - Python < 3.10.
-- Sync-first API.
+- Sync-first API. Sync support exists (`SyncProducer`) but is a bridge over
+  the async core, not the primary surface.
 
 ---
 

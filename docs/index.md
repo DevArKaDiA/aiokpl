@@ -24,7 +24,7 @@
 | 5 | Sender + Retrier | Done |
 | 6 | Producer + lifecycle (first usable release: v0.1) | Done |
 | 7 | CloudWatch metrics (opt-in) | Done |
-| 8 | Sync bridge | Next |
+| 8 | Sync bridge (`SyncProducer`) | Done |
 
 ## Why aiokpl
 
@@ -90,3 +90,16 @@ anyio.run(main)
 The `Producer` is asyncio-only (aiobotocore is asyncio-only). The lower
 phases (codec, ShardMap, Reducer, Aggregator, Collector, Limiter) remain
 backend-agnostic and are tested on both asyncio and trio.
+
+For callers that don't run an async event loop, use
+[`SyncProducer`](phases/phase-8-sync.md):
+
+```python
+from aiokpl import Config, SyncProducer
+
+with SyncProducer(Config(region="us-east-1")) as producer:
+    outcome = producer.put_record(
+        stream="my-stream", partition_key="user-123", data=b"hello"
+    )
+    result = outcome.wait(timeout=5.0)
+```

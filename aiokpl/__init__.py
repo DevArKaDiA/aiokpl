@@ -31,6 +31,7 @@ from aiokpl.sinks import (
     MetricsSink,
     NullSink,
 )
+from aiokpl.sync import SyncOutcome, SyncOutcomeCancelled, SyncProducer
 from aiokpl.token_bucket import TokenBucket
 
 __all__ = [
@@ -67,6 +68,9 @@ __all__ = [
     "ShardLimiter",
     "ShardMap",
     "ShardMapState",
+    "SyncOutcome",
+    "SyncOutcomeCancelled",
+    "SyncProducer",
     "Tag",
     "TokenBucket",
     "UserRecord",

@@ -355,10 +355,24 @@ testable.
   (`NONE` / `SUMMARY` / `DETAILED`). Default `NONE` is a zero-overhead no-op.
 - Metric names match the C++ KPL constants verbatim.
 
-### Phase 8 — Sync bridge (optional)
+### Phase 8 — Sync bridge ✅ done (v0.2)
 
-- `aiokpl/sync.py`: wrapper for non-async callers. Spawns a private loop in a
-  background thread. Only ship if asked.
+- `aiokpl/sync.py`: `SyncProducer` + `SyncOutcome` for non-async callers
+  (Flask/Django/Jupyter/scripts). The bridge runs the async `Producer` on a
+  background event loop via `anyio.from_thread.start_blocking_portal()`
+  (not raw `threading.Thread` + `asyncio.run` — anyio already does loop
+  startup/teardown across backends, no need to hand-roll).
+- A single long-lived dispatcher task owns the `Producer` and consumes
+  commands from a memory-object stream so every operation runs in the same
+  task — required because `anyio.TaskGroup`/`CancelScope` bind to the
+  opening task and the async Producer lazily creates per-stream pipelines
+  with their own TaskGroups.
+- Public surface: `SyncProducer(cfg)` is a regular `with` block.
+  `put_record` is thread-safe and returns an opaque `SyncOutcome` with
+  `wait(timeout=)`, `done()`, `cancel()`. `flush(timeout=)` blocks until
+  drain. Cancellation surfaces as `SyncOutcomeCancelled` (distinct from
+  `asyncio.CancelledError` to avoid `concurrent.futures` interpreting it as
+  future-level cancellation).
 
 ---
 
