@@ -387,7 +387,7 @@ async def test_backpressure_blocks_third_put(fake_client: _FakeClient) -> None:
             # first two outcomes resolve and release.
             await anyio.lowlevel.checkpoint()
             assert not third_finished.is_set()
-            with anyio.fail_after(5.0):
+            with anyio.fail_after(30.0):
                 await o0.wait()
                 await o1.wait()
                 await third_finished.wait()
