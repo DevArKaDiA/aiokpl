@@ -1,8 +1,8 @@
 site_name: aiokpl
 site_description: Pure-Python async Kinesis producer. KPL-equivalent without a native daemon.
-site_url: https://juanrojas.github.io/aiokpl/
-repo_url: https://github.com/juanrojas/aiokpl
-repo_name: juanrojas/aiokpl
+site_url: https://DevArKaDiA.github.io/aiokpl/
+repo_url: https://github.com/DevArKaDiA/aiokpl
+repo_name: DevArKaDiA/aiokpl
 edit_uri: edit/main/docs/
 
 theme:
@@ -108,6 +108,8 @@ nav:
       - Roadmap: phases/index.md
       - Phase 1 — Codec: phases/phase-1-codec.md
       - Phase 2 — ShardMap: phases/phase-2-shardmap.md
+      - Phase 3 — Batching: phases/phase-3-batching.md
+      - Phase 4 — Rate limiting: phases/phase-4-rate-limiting.md
       - Phase 5 — Sender + Retrier: phases/phase-5-sender-retrier.md
       - Phase 6 — Producer (v0.1): phases/phase-6-producer.md
       - Phase 7 — Metrics: phases/phase-7-metrics.md
@@ -123,4 +125,4 @@ nav:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/juanrojas/aiokpl
+      link: https://github.com/DevArKaDiA/aiokpl

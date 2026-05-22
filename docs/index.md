@@ -6,11 +6,11 @@
 > before size, and treats failures as user-visible information — not noise to
 > hide.
 
-!!! success "v0.1 available"
-    `aiokpl` ships its first usable release with Phase 6. The full pipeline —
-    `Producer` → `Aggregator` → `Limiter` → `Collector` → `Sender` → `Retrier`
-    — is wired and exercised end-to-end against `kinesis-mock`. See the
-    [Roadmap](phases/index.md) for what's next.
+!!! success "v0.2 available"
+    Every phase from scaffolding through the sync bridge is done. The
+    full async pipeline ships, metrics are vendor-neutral, and
+    non-async callers have a `SyncProducer` over the same core. See
+    the [Roadmap](phases/index.md) for per-phase details.
 
 ## Status
 
@@ -25,6 +25,27 @@
 | 6 | Producer + lifecycle (first usable release: v0.1) | Done |
 | 7 | CloudWatch metrics (opt-in) | Done |
 | 8 | Sync bridge (`SyncProducer`) | Done |
+
+## What v0.2 ships
+
+- **The full pipeline** — `Producer` → `Aggregator` → `Limiter` →
+  `Collector` → `Sender` → `Retrier` — wired end-to-end and exercised
+  against `etspaceman/kinesis-mock` in CI. Deadline-driven batching at
+  two levels, per-shard rate limiting at the Kinesis hard caps, smart
+  retry classification, per-record attempt history.
+- **Vendor-neutral metrics.** The library emits semantic events and
+  hands them to a `MetricsSink` you plug in. Default is
+  [`NullSink`][aiokpl.sinks.NullSink] (zero overhead). First-party
+  sinks: [`InMemorySink`][aiokpl.sinks.InMemorySink] for tests,
+  [`CloudWatchSink`][aiokpl.sinks.CloudWatchSink] bundled (since
+  `aiobotocore` is already a dep), plus `OpenTelemetrySink` and
+  `DatadogSink` behind the `aiokpl[otel]` and `aiokpl[datadog]`
+  extras. The core has no vendor strings.
+- **Sync bridge.** [`SyncProducer`][aiokpl.SyncProducer] wraps the async
+  `Producer` behind `anyio.from_thread.start_blocking_portal()` so
+  Flask/Django handlers, Jupyter cells, and plain scripts can submit
+  records without an event loop. Thread-safe `put_record`; bounded
+  `wait(timeout=)` and `flush(timeout=)`.
 
 ## Why aiokpl
 
@@ -91,15 +112,26 @@ The `Producer` is asyncio-only (aiobotocore is asyncio-only). The lower
 phases (codec, ShardMap, Reducer, Aggregator, Collector, Limiter) remain
 backend-agnostic and are tested on both asyncio and trio.
 
-For callers that don't run an async event loop, use
-[`SyncProducer`](phases/phase-8-sync.md):
+## Synchronous usage
+
+For callers that don't run an async event loop (Flask/Django handlers,
+scripts, Jupyter), use [`SyncProducer`](phases/phase-8-sync.md):
 
 ```python
 from aiokpl import Config, SyncProducer
 
 with SyncProducer(Config(region="us-east-1")) as producer:
     outcome = producer.put_record(
-        stream="my-stream", partition_key="user-123", data=b"hello"
+        stream="my-stream",
+        partition_key="user-123",
+        data=b"hello",
     )
     result = outcome.wait(timeout=5.0)
+    if result.success:
+        print(result.shard_id, result.sequence_number)
 ```
+
+Same shape as the async API. Under the hood a private
+`anyio.from_thread.BlockingPortal` runs the async `Producer` on a
+background thread; `put_record` is thread-safe and `wait()` / `flush()`
+accept timeouts.

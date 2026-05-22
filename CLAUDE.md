@@ -123,6 +123,12 @@ Translation table:
   (CloudWatch is bundled since `aiobotocore` is already a dep). Default
   sink is `NullSink` (zero overhead). Sinks plug in via
   `Config.metrics_sink`.
+- **Public API for v0.2:** `Producer`, `SyncProducer`, `Config`,
+  `Outcome`, `RecordResult`, `Attempt`, `MetricsSink`,
+  `MetricsManager`, `MetricsLevel`, sinks (`NullSink`, `InMemorySink`,
+  `CloudWatchSink`, plus `OpenTelemetrySink` / `DatadogSink` via
+  extras). Anything not on that list is internal and may move between
+  minor versions.
 
 ---
 
@@ -286,7 +292,7 @@ testable.
 - Empty `aiokpl/__init__.py`.
 - No code yet.
 
-### Phase 1 — aggregation codec
+### Phase 1 — aggregation codec ✅ done
 
 - `aiokpl/aggregation.py`: encode/decode of the KPL aggregated record format.
   Magic + protobuf + MD5. Includes dedup tables for partition keys and EHKs.
@@ -294,14 +300,14 @@ testable.
 - Tests: round-trip with `aws-kinesis-agg`'s output if installed; otherwise
   golden bytes from the C++ KPL's serialized records.
 
-### Phase 2 — ShardMap
+### Phase 2 — ShardMap ✅ done
 
 - `aiokpl/shard_map.py`: state machine, async refresh, `bisect_left` lookup,
   `invalidate`. Uses `aiobotocore` `list_shards` paginated.
 - Tests with `moto` for `ListShards`; assert binary-search correctness across
   splits.
 
-### Phase 3 — Reducer + Aggregator + Collector
+### Phase 3 — Reducer + Aggregator + Collector ✅ done
 
 - `aiokpl/reducer.py`: generic deadline-driven batcher. Generic over
   `(item, batch)` types. `add()` returns a closed batch or `None`. Deadline
@@ -313,7 +319,7 @@ testable.
 - Tests: deadline ordering (FIFO fairness on flush), excess re-injection,
   cancellation under shutdown.
 
-### Phase 4 — Limiter + TokenBucket
+### Phase 4 — Limiter + TokenBucket ✅ done
 
 - `aiokpl/token_bucket.py`: multi-stream token bucket, `try_take([n_records,
   n_bytes])`. Pure math, no time.sleep — query-on-demand growth model.
@@ -321,7 +327,7 @@ testable.
   `drain()` polled every 25 ms by a background task.
 - Tests: rate envelope under sustained load, expiry path.
 
-### Phase 5 — Sender + Retrier
+### Phase 5 — Sender + Retrier ✅ done
 
 - `aiokpl/sender.py`: glue to `aiobotocore.client.put_records`, builds
   `PutRecordsRequestEntry` with the correct partition key and EHK for

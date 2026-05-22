@@ -1,17 +1,20 @@
 # aiokpl
 
-![CI](https://github.com/juanrojas/aiokpl/actions/workflows/ci.yml/badge.svg)
-[![codecov](https://codecov.io/gh/juanrojas/aiokpl/branch/main/graph/badge.svg)](https://codecov.io/gh/juanrojas/aiokpl)
+![CI](https://github.com/DevArKaDiA/aiokpl/actions/workflows/ci.yml/badge.svg)
+[![codecov](https://codecov.io/gh/DevArKaDiA/aiokpl/branch/main/graph/badge.svg)](https://codecov.io/gh/DevArKaDiA/aiokpl)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-**📚 [Documentation](https://juanrojas.github.io/aiokpl/)**
+**📚 [Documentation](https://DevArKaDiA.github.io/aiokpl/)**
 
 **Pure-Python async Kinesis producer. KPL-equivalent without a native daemon.**
 
-> **v0.1 available** — the full pipeline ships and is exercised end-to-end
-> against `kinesis-mock`. See [Phase 6](docs/phases/phase-6-producer.md).
+> **v0.2 available** — full pipeline, vendor-neutral metrics with
+> first-party CloudWatch / OpenTelemetry / Datadog sinks, and a
+> thread-safe `SyncProducer` for non-async callers. All exercised
+> end-to-end against `kinesis-mock`. See the
+> [Roadmap](docs/phases/index.md).
 
 > A library that respects the shard as the unit of optimization, measures time
 > before size, and treats failures as user-visible information — not noise to hide.
@@ -20,9 +23,11 @@
 
 ## Status
 
-**v0.1 — first usable release.** Full async pipeline lands with Phase 6:
-`Producer` → `Aggregator` → `Limiter` → `Collector` → `Sender` → `Retrier`.
-Not on PyPI yet — install via the repo URL.
+**v0.2 — feature-complete.** Full async pipeline (`Producer` →
+`Aggregator` → `Limiter` → `Collector` → `Sender` → `Retrier`), opt-in
+vendor-neutral metrics with first-party sinks, and a thread-safe
+`SyncProducer` for non-async callers. Not on PyPI yet — install via the
+repo URL.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -76,9 +81,12 @@ The full design rationale lives in [`CLAUDE.md`](./CLAUDE.md).
 
 ## Features
 
-### What v0.1 will do
+### What v0.2 ships
 
-- **Backend-agnostic**: works on both `asyncio` and `trio` via `anyio`.
+- **Backend-agnostic core** via `anyio` — codec, ShardMap, Reducer,
+  Aggregator, Collector, Limiter, and TokenBucket all run on either
+  `asyncio` or `trio`. The `Producer`/`SyncProducer`/Sender/Retrier
+  edge is asyncio-only because `aiobotocore` is asyncio-only.
 - **Async-first API** built on `anyio` and (for the network layer)
   `aiobotocore`.
 - **Byte-exact KPL aggregation** on the wire — KCL consumers deaggregate
@@ -95,19 +103,19 @@ The full design rationale lives in [`CLAUDE.md`](./CLAUDE.md).
   visible.
 - **Bounded backpressure** via `max_outstanding_records`.
 - **Graceful shutdown** via `async with` + `flush()`.
+- **Vendor-neutral metrics** behind a `MetricsSink` Protocol. Default
+  `NullSink` is zero overhead. First-party sinks: `InMemorySink` for
+  tests, `CloudWatchSink` bundled (since `aiobotocore` is already a
+  dep), plus `OpenTelemetrySink` and `DatadogSink` behind the
+  `aiokpl[otel]` / `aiokpl[datadog]` extras. Metric names match the
+  C++ KPL constants verbatim.
+- **Synchronous bridge** — `SyncProducer` wraps the async core behind
+  `anyio.from_thread.start_blocking_portal()` so Flask/Django/Jupyter
+  callers can submit records without an event loop. Thread-safe
+  `put_record`, bounded `wait(timeout=)` and `flush(timeout=)`.
 
-### Phase 7 highlights
-
-- **Opt-in CloudWatch metrics** via `Config.metrics_level`. Default off,
-  zero overhead. Two levels: `SUMMARY` (stream-only) or `DETAILED`
-  (stream + shard + error code). Periodic upload through `aiobotocore`;
-  metric names match the C++ KPL constants.
-
-### What v0.1 will NOT do
-
-- No producer-side consumer / KCL replacement.
-- No native binary, ever. No subprocess, no IPC, no protobuf framing.
-- No Python < 3.10.
+See the [`Non-goals`](#non-goals) section below for what aiokpl
+deliberately doesn't do.
 
 ---
 
