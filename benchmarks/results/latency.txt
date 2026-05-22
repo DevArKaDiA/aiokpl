@@ -1,0 +1,21 @@
+[bench_latency] starting kinesis-mock…
+[bench_latency] endpoint=https://localhost:56747
+  running aiokpl async agg=on…
+    -> p50=777.95ms p99=1472.91ms p99.9=1484.22ms
+  running aiokpl async agg=off…
+    -> p50=798.45ms p99=1474.95ms p99.9=1486.60ms
+  running aiokpl sync agg=on…
+    -> p50=958.65ms p99=1755.16ms p99.9=1767.11ms
+  running boto3 put_records…
+    -> p50=104.66ms p99=169.56ms p99.9=173.74ms
+  running aws-kinesis-agg + boto3…
+    -> p50=697.52ms p99=1330.78ms p99.9=1342.10ms
+
+=== Latency results ===
+| variant                 |   shards |    N |   elapsed (s) |   rps |   p50 ms |   p99 ms |   p99.9 ms | notes   |
+|-------------------------|----------|------|---------------|-------|----------|----------|------------|---------|
+| aiokpl async agg=on     |        2 | 1000 |         1.542 |   649 |   777.95 |  1472.91 |    1484.22 |         |
+| aiokpl async agg=off    |        2 | 1000 |         1.545 |   647 |   798.45 |  1474.95 |    1486.6  |         |
+| aiokpl sync agg=on      |        2 | 1000 |         1.892 |   529 |   958.65 |  1755.16 |    1767.11 |         |
+| boto3 put_records       |        2 | 1000 |         1.671 |   599 |   104.66 |   169.56 |     173.74 |         |
+| aws-kinesis-agg + boto3 |        2 | 1000 |         1.343 |   744 |   697.52 |  1330.78 |    1342.1  |         |

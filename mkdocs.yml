@@ -111,7 +111,7 @@ nav:
       - Aggregation format: aggregation-format.md
   - Reference:
       - API: reference/
-      # - Benchmarks: benchmarks.md  # TODO: re-add once benchmarks.md is written
+      - Benchmarks: benchmarks.md
   - Roadmap:
       - Overview: phases/index.md
       - Phase 1 — Codec: phases/phase-1-codec.md

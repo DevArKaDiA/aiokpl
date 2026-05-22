@@ -1,0 +1,57 @@
+[
+  {
+    "label": "aiokpl async agg=on",
+    "total_records": 1000,
+    "elapsed_s": 1.5418406669050455,
+    "throughput_rps": 648.5754471681639,
+    "p50_ms": 777.9472498223186,
+    "p99_ms": 1472.9125830344856,
+    "p999_ms": 1484.2186658643186,
+    "shards": 2,
+    "notes": ""
+  },
+  {
+    "label": "aiokpl async agg=off",
+    "total_records": 1000,
+    "elapsed_s": 1.5452299169264734,
+    "throughput_rps": 647.152885823646,
+    "p50_ms": 798.4542087651789,
+    "p99_ms": 1474.9489580281079,
+    "p999_ms": 1486.6037089377642,
+    "shards": 2,
+    "notes": ""
+  },
+  {
+    "label": "aiokpl sync agg=on",
+    "total_records": 1000,
+    "elapsed_s": 1.8917677500285208,
+    "throughput_rps": 528.60611456397,
+    "p50_ms": 958.6547501385212,
+    "p99_ms": 1755.1596253179014,
+    "p999_ms": 1767.112959176302,
+    "shards": 2,
+    "notes": ""
+  },
+  {
+    "label": "boto3 put_records",
+    "total_records": 1000,
+    "elapsed_s": 1.6705196658149362,
+    "throughput_rps": 598.6161195607153,
+    "p50_ms": 104.66420883312821,
+    "p99_ms": 169.56412512809038,
+    "p999_ms": 173.73966565355659,
+    "shards": 2,
+    "notes": ""
+  },
+  {
+    "label": "aws-kinesis-agg + boto3",
+    "total_records": 1000,
+    "elapsed_s": 1.3434669999405742,
+    "throughput_rps": 744.3428086020969,
+    "p50_ms": 697.5245410576463,
+    "p99_ms": 1330.7773750275373,
+    "p999_ms": 1342.0977080240846,
+    "shards": 2,
+    "notes": ""
+  }
+]
