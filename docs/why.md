@@ -48,6 +48,13 @@ part. That composition is what `aiokpl` ships.
 Each existing option is a reasonable tool for the slice it covers. None
 is a drop-in replacement for the C++ KPL. `aiokpl` is.
 
+!!! tip "How much does the safety net cost?"
+    Roughly a 3× throughput hit vs raw `aws-kinesis-agg + boto3` on
+    `kinesis-mock`, compressing to ~1.3-1.5× against real AWS where
+    network latency dominates. The full numbers, the methodology, and a
+    direct "is it worth it?" discussion live on the
+    [Benchmarks](benchmarks.md) page.
+
 !!! note "What about LocalStack or `kinesis-mock`?"
     Those are **Kinesis emulators**, not producer libraries — they
     replace the AWS service for local testing. `aiokpl` runs against them
