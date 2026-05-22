@@ -80,4 +80,4 @@ __all__ = [
     "md5_hash_key",
     "parse_explicit_hash_key",
 ]
-__version__ = "0.0.1"
+__version__ = "0.2.0"

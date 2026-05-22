@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aiokpl"
-version = "0.0.1"
+version = "0.2.0"
 description = "Pure-Python async Kinesis producer. KPL-equivalent without a native daemon."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,7 @@ license = { text = "Apache-2.0" }
 authors = [{ name = "Juan F. Rojas", email = "jfernandorojasc@gmail.com" }]
 keywords = ["kinesis", "aws", "async", "producer", "kpl", "aggregation"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 4 - Beta",
   "Framework :: AsyncIO",
   "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3 :: Only",

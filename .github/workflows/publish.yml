@@ -1,0 +1,73 @@
+name: Publish
+
+# Triggered by a GitHub Release. Going through the Release UI is the
+# manual gate — there's no tag-push trigger so an accidental tag never
+# publishes. To release: create a tag, then `gh release create vX.Y.Z
+# --generate-notes` (or use the GitHub UI).
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: false
+
+      - name: Verify tag matches pyproject + __init__ versions
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          PYPROJECT=$(uv run --no-project python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          INIT=$(uv run --no-project python -c "import re,pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('aiokpl/__init__.py').read_text()).group(1))")
+          echo "tag=$TAG pyproject=$PYPROJECT __init__=$INIT"
+          if [ "$TAG" != "$PYPROJECT" ] || [ "$TAG" != "$INIT" ]; then
+            echo "::error::Version mismatch — tag '$TAG' must equal pyproject '$PYPROJECT' and __init__ '$INIT'"
+            exit 1
+          fi
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Inspect built artifacts
+        run: |
+          ls -la dist/
+          uv run --with twine twine check --strict dist/*
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to PyPI
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/aiokpl/${{ github.event.release.tag_name }}
+    permissions:
+      id-token: write  # OIDC for Trusted Publishing
+      contents: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI via OIDC
+        uses: pypa/gh-action-pypi-publish@6733eb7d741f0b11ec6a39b58540dab7590f9b7d # v1.14.0
