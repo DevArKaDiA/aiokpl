@@ -35,8 +35,8 @@ theme:
     - navigation.tracking
     - navigation.tabs
     - navigation.sections
-    - navigation.expand
     - navigation.top
+    - navigation.indexes
     - toc.follow
     - toc.integrate
     - search.suggest
@@ -101,13 +101,19 @@ plugins:
 nav:
   - Home: index.md
   - Why aiokpl: why.md
-  - Getting started: getting-started.md
-  - Philosophy: philosophy.md
-  - Architecture: architecture.md
-  - Aggregation format: aggregation-format.md
-  - Benchmarks: benchmarks.md
-  - Phases:
-      - Roadmap: phases/index.md
+  - Get started:
+      - Quick start: getting-started.md
+      - Examples:
+          - FastAPI producer: examples/fastapi.md
+  - Design:
+      - Philosophy: philosophy.md
+      - Architecture: architecture.md
+      - Aggregation format: aggregation-format.md
+  - Reference:
+      - API: reference/
+      # - Benchmarks: benchmarks.md  # TODO: re-add once benchmarks.md is written
+  - Roadmap:
+      - Overview: phases/index.md
       - Phase 1 — Codec: phases/phase-1-codec.md
       - Phase 2 — ShardMap: phases/phase-2-shardmap.md
       - Phase 3 — Batching: phases/phase-3-batching.md
@@ -116,7 +122,6 @@ nav:
       - Phase 6 — Producer (v0.1): phases/phase-6-producer.md
       - Phase 7 — Metrics: phases/phase-7-metrics.md
       - Phase 8 — SyncProducer: phases/phase-8-sync.md
-  - API reference: reference/
   - Development:
       - Setup: dev/setup.md
       - Testing: dev/testing.md
