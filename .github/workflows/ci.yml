@@ -52,13 +52,20 @@ jobs:
           include-hidden-files: true
 
   integration:
-    name: Integration tests (kinesis-mock)
+    name: Integration (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Head and tail of the supported window — catches version-specific
+        # behaviour in aiobotocore / anyio / asyncio without paying for the
+        # middle versions.
+        python: ["3.10", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
       - uses: astral-sh/setup-uv@v3
       - name: Install nox
         run: uv pip install --system nox
@@ -66,10 +73,10 @@ jobs:
         run: docker version
       - name: Pre-pull kinesis-mock image
         run: docker pull ghcr.io/etspaceman/kinesis-mock:0.5.2
-      - name: Run integration tests (fast lane only)
-        run: nox -s integration -- -m "integration and not slow"
-      - name: Run slow integration tests
-        run: nox -s integration -- -m "integration and slow"
+      - name: Fast integration lane
+        run: nox -s integration-${{ matrix.python }} -- -m "integration and not slow"
+      - name: Slow integration lane
+        run: nox -s integration-${{ matrix.python }} -- -m "integration and slow"
 
   codecov:
     # Coverage gate is enforced per-Python in the `tests` matrix via

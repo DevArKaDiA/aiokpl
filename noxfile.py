@@ -35,9 +35,18 @@ def tests(session: nox.Session) -> None:
     )
 
 
-@nox.session(python="3.12")
+INTEGRATION_PYTHON = ["3.10", "3.12", "3.13"]
+
+
+@nox.session(python=INTEGRATION_PYTHON)
 def integration(session: nox.Session) -> None:
-    """Run integration tests against kinesis-mock (Docker required)."""
+    """Run integration tests against kinesis-mock (Docker required).
+
+    Parameterized over head/middle/tail of the supported Python window.
+    CI by default runs `[3.10, 3.13]`; 3.12 is included here so local
+    quick runs (`nox -s integration-3.12`) hit the same Python the
+    docs/build jobs use.
+    """
     session.install("-e", ".[test,integration,otel,datadog]")
     session.run("pytest", "-m", "integration", "-v", *session.posargs)
 

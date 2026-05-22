@@ -37,17 +37,21 @@ jobs:
         run: nox -s tests-${{ matrix.python }}
 
   integration:
-    name: Integration tests (kinesis-mock)
+    name: Integration (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.13"]   # head + tail of the supported window
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
       - name: Install nox
         run: uv pip install --system nox
@@ -56,9 +60,9 @@ jobs:
       - name: Pre-pull kinesis-mock
         run: docker pull ghcr.io/etspaceman/kinesis-mock:0.5.2
       - name: Fast integration lane
-        run: nox -s integration -- -m "integration and not slow"
+        run: nox -s integration-${{ matrix.python }} -- -m "integration and not slow"
       - name: Slow integration lane
-        run: nox -s integration -- -m "integration and slow"
+        run: nox -s integration-${{ matrix.python }} -- -m "integration and slow"
 
   build:
     name: Build distribution
