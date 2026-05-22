@@ -75,7 +75,7 @@ ideas in a language where you don't need a daemon.
 5. **Failures are data, not exceptions.**
 6. **Bounded latency beats maximum throughput.**
 
-The full design rationale lives in [`CLAUDE.md`](./CLAUDE.md).
+The full design rationale lives in the [Philosophy](https://devarkadia.github.io/aiokpl/philosophy/) page.
 
 ---
 
@@ -195,9 +195,9 @@ Retrier      ──► classify outcome (throttle / transient / wrong-shard / ex
 finish_user_record  →  resolves the user's awaitable future
 ```
 
-Same pipeline as the C++ KPL, in idiomatic anyio primitives. See
-[`CLAUDE.md`](./CLAUDE.md#mapping-c--python) for the C++↔Python translation
-table.
+Same pipeline as the C++ KPL, in idiomatic anyio primitives. See the
+[Architecture](https://devarkadia.github.io/aiokpl/architecture/) page for
+the C++↔Python translation table.
 
 ---
 
@@ -289,10 +289,6 @@ CI matrix: Python 3.10 / 3.11 / 3.12 / 3.13. `ruff` + `mypy` + `pytest`.
 ---
 
 ## Reference
-
-Implementation context — including the philosophy, the C++↔Python mapping, the
-retrier classification table, and the resume guide — lives in
-[`CLAUDE.md`](./CLAUDE.md).
 
 Original C++ KPL source for cross-referencing:
 <https://github.com/awslabs/amazon-kinesis-producer>.

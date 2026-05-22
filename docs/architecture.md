@@ -21,8 +21,8 @@ Retrier      ──► classify outcome (throttle / transient / wrong-shard / ex
 finish_user_record  →  resolves the user's awaitable future
 ```
 
-For the full C++ ↔ Python mapping table, see
-[`CLAUDE.md`](https://github.com/DevArKaDiA/aiokpl/blob/main/CLAUDE.md#architecture-mapping-c--python).
+For the migration mapping from the C++ KPL Java sidecar to the `aiokpl`
+public API, see [Migrating from the KPL Java sidecar](why.md#migrating-from-the-kpl-java-sidecar).
 
 ## Stages
 
@@ -66,10 +66,23 @@ not hammer downstream from SDK callback threads.)
 
 The most important code in the library. For each per-record result inside
 the `PutRecords` response, the retrier classifies the outcome and decides
-the next step. See the
-[classification table in CLAUDE.md](https://github.com/DevArKaDiA/aiokpl/blob/main/CLAUDE.md#retrier-classification-the-most-important-code-in-the-library)
-for the full rules. On terminal outcomes (`finish` or `fail`), the
-retrier resolves the user's future with a `RecordResult`.
+the next step:
+
+| Outcome | Action |
+|---|---|
+| Success, predicted shard matches actual | `finish(success)` |
+| Success, actual shard contains the hash (split-child) | `finish(success)` + `ShardMap.invalidate` |
+| Success, actual shard does NOT contain the hash | `retry("Wrong Shard")` + `ShardMap.invalidate` |
+| Error `ProvisionedThroughputExceededException` + `fail_if_throttled=True` | `fail` |
+| Error `ProvisionedThroughputExceededException` + `fail_if_throttled=False` | `retry_not_expired` |
+| Other error | `retry_not_expired` |
+
+`retry_not_expired` checks `clock() - arrival_time > record_ttl_ms` —
+expired records `fail("Expired")`, otherwise the record is re-enqueued
+with a fresh deadline. See [Phase 5 — Sender + Retrier](phases/phase-5-sender-retrier.md)
+for the implementation walkthrough. On terminal outcomes (`finish` or
+`fail`), the retrier resolves the user's awaitable future with a
+`RecordResult` carrying the full attempt history.
 
 ## Sequence
 
