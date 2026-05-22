@@ -349,24 +349,29 @@ async def test_backpressure_blocks_third_put(fake_client: _FakeClient) -> None:
     half = (1 << 128) // 2
     # Two distinct PutRecords calls because the first two records share a
     # collector flush but the third arrives after the semaphore unblocks.
+    # Drive the pipeline with explicit flush() calls rather than relying
+    # on the 20 ms deadline timer — on loaded CI hosts the timer can be
+    # starved long enough to wedge the test.
     fake_client.queue_list_shards(_two_shard_response())
     fake_client.queue_put(_multi_ok_response(("s-0", "shardId-0"), ("s-1", "shardId-1")))
     fake_client.queue_put(_ok_response("s-2", "shardId-0"))
-    cfg = _cfg(record_max_buffered_time_ms=20.0, max_outstanding_records=2)
+    cfg = _cfg(record_max_buffered_time_ms=10_000.0, max_outstanding_records=2)
 
     third_finished = anyio.Event()
+    third_started = anyio.Event()
+    third_container: list[Outcome[RecordResult]] = []
 
-    async def submit_third(producer: Producer, container: list[Outcome[RecordResult]]) -> None:
+    async def submit_third(producer: Producer) -> None:
+        third_started.set()
         out = await producer.put_record(
             stream="s",
             partition_key="pk-third",
             data=b"c",
             explicit_hash_key="2",
         )
-        container.append(out)
+        third_container.append(out)
         third_finished.set()
 
-    third_container: list[Outcome[RecordResult]] = []
     async with Producer(cfg) as producer:
         o0 = await producer.put_record(
             stream="s",
@@ -381,19 +386,33 @@ async def test_backpressure_blocks_third_put(fake_client: _FakeClient) -> None:
             explicit_hash_key=str(half),
         )
         assert producer.outstanding_records == 2
+
         async with anyio.create_task_group() as tg:
-            tg.start_soon(submit_third, producer, third_container)
-            # The third call must be blocked on the semaphore until the
-            # first two outcomes resolve and release.
-            await anyio.lowlevel.checkpoint()
+            tg.start_soon(submit_third, producer)
+            # Wait for the third task to be scheduled and immediately block
+            # on the semaphore (max_outstanding_records=2 is already used).
+            with anyio.fail_after(5.0):
+                await third_started.wait()
+            await anyio.sleep(0.05)  # give the semaphore.acquire a chance to block
             assert not third_finished.is_set()
-            with anyio.fail_after(30.0):
+            assert producer.outstanding_records == 2
+
+            # Explicit flush forces the first two records through the
+            # pipeline without depending on the deadline timer firing.
+            await producer.flush()
+            with anyio.fail_after(10.0):
                 await o0.wait()
                 await o1.wait()
+            # First two outcomes resolved → semaphore released → submit_third
+            # proceeds → third record enters the pipeline. Flush again so it
+            # actually goes to PutRecords without waiting on a timer.
+            with anyio.fail_after(5.0):
                 await third_finished.wait()
+            await producer.flush()
+            with anyio.fail_after(10.0):
+                await third_container[0].wait()
+
         assert len(third_container) == 1
-        with anyio.fail_after(5.0):
-            await third_container[0].wait()
 
 
 async def test_multi_stream_lazy_pipelines(fake_client: _FakeClient) -> None:
