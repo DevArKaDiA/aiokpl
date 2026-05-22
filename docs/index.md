@@ -6,12 +6,6 @@
 > before size, and treats failures as user-visible information — not noise to
 > hide.
 
-!!! success "v0.2 available"
-    Every phase from scaffolding through the sync bridge is done. The
-    full async pipeline ships, metrics are vendor-neutral, and
-    non-async callers have a `SyncProducer` over the same core. See
-    the [Roadmap](phases/index.md) for per-phase details.
-
 ## Status
 
 | Phase | Scope | Status |
@@ -26,28 +20,7 @@
 | 7 | CloudWatch metrics (opt-in) | Done |
 | 8 | Sync bridge (`SyncProducer`) | Done |
 
-## What v0.2 ships
-
-- **The full pipeline** — `Producer` → `Aggregator` → `Limiter` →
-  `Collector` → `Sender` → `Retrier` — wired end-to-end and exercised
-  against `etspaceman/kinesis-mock` in CI. Deadline-driven batching at
-  two levels, per-shard rate limiting at the Kinesis hard caps, smart
-  retry classification, per-record attempt history.
-- **Vendor-neutral metrics.** The library emits semantic events and
-  hands them to a `MetricsSink` you plug in. Default is
-  [`NullSink`][aiokpl.sinks.NullSink] (zero overhead). First-party
-  sinks: [`InMemorySink`][aiokpl.sinks.InMemorySink] for tests,
-  [`CloudWatchSink`][aiokpl.sinks.CloudWatchSink] bundled (since
-  `aiobotocore` is already a dep), plus `OpenTelemetrySink` and
-  `DatadogSink` behind the `aiokpl[otel]` and `aiokpl[datadog]`
-  extras. The core has no vendor strings.
-- **Sync bridge.** [`SyncProducer`][aiokpl.SyncProducer] wraps the async
-  `Producer` behind `anyio.from_thread.start_blocking_portal()` so
-  Flask/Django handlers, Jupyter cells, and plain scripts can submit
-  records without an event loop. Thread-safe `put_record`; bounded
-  `wait(timeout=)` and `flush(timeout=)`.
-
-## Why aiokpl
+## What aiokpl is
 
 AWS ships the Kinesis Producer Library as a native C++ binary wrapped in
 Java/.NET sidecars. The Python ecosystem has never had a real KPL — only a
@@ -77,61 +50,12 @@ ideas in a language where you do not need a daemon.
 - **Backend-agnostic**: built on `anyio`, so the same code runs on both
   `asyncio` and `trio`.
 
-See [Philosophy](philosophy.md) for the full rationale.
+## Where to go next
 
-## Get started
-
-```python
-import anyio
-from aiokpl import Producer, Config
-
-async def main():
-    cfg = Config(
-        region="us-east-1",
-        aggregation_enabled=True,
-        record_max_buffered_time_ms=100,
-        record_ttl_ms=30_000,
-        fail_if_throttled=False,
-    )
-    async with Producer(cfg) as producer:
-        outcome = await producer.put_record(
-            stream="my-stream",
-            partition_key="user-123",
-            data=b"hello",
-        )
-        result = await outcome.wait()
-        if result.success:
-            print(result.shard_id, result.sequence_number)
-        else:
-            print("failed:", result.attempts[-1].error_code)
-
-anyio.run(main)
-```
-
-The `Producer` is asyncio-only (aiobotocore is asyncio-only). The lower
-phases (codec, ShardMap, Reducer, Aggregator, Collector, Limiter) remain
-backend-agnostic and are tested on both asyncio and trio.
-
-## Synchronous usage
-
-For callers that don't run an async event loop (Flask/Django handlers,
-scripts, Jupyter), use [`SyncProducer`](phases/phase-8-sync.md):
-
-```python
-from aiokpl import Config, SyncProducer
-
-with SyncProducer(Config(region="us-east-1")) as producer:
-    outcome = producer.put_record(
-        stream="my-stream",
-        partition_key="user-123",
-        data=b"hello",
-    )
-    result = outcome.wait(timeout=5.0)
-    if result.success:
-        print(result.shard_id, result.sequence_number)
-```
-
-Same shape as the async API. Under the hood a private
-`anyio.from_thread.BlockingPortal` runs the async `Producer` on a
-background thread; `put_record` is thread-safe and `wait()` / `flush()`
-accept timeouts.
+- **[Why aiokpl?](why.md)** — the gap in the Python ecosystem, what makes
+  this different from `aws-kinesis-agg` + `boto3`, and when *not* to use it.
+- **[Get started](getting-started.md)** — installation, the first program,
+  every `Config` knob, sinks, troubleshooting.
+- **[Learn the design](philosophy.md)** — the six principles in depth.
+- **[Architecture](architecture.md)** — the pipeline, stage by stage.
+<!-- benchmarks.md owned by another agent; link added when the page lands. -->

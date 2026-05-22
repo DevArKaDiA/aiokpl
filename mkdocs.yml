@@ -101,9 +101,11 @@ plugins:
 nav:
   - Home: index.md
   - Why aiokpl: why.md
+  - Getting started: getting-started.md
   - Philosophy: philosophy.md
   - Architecture: architecture.md
   - Aggregation format: aggregation-format.md
+  - Benchmarks: benchmarks.md
   - Phases:
       - Roadmap: phases/index.md
       - Phase 1 — Codec: phases/phase-1-codec.md
