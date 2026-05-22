@@ -130,6 +130,10 @@ nav:
       - Releasing: dev/releasing.md
 
 extra:
+  version:
+    provider: mike
+    default: latest
+    alias: true
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/DevArKaDiA/aiokpl

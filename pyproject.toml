@@ -62,6 +62,7 @@ docs = [
   "mkdocs-literate-nav>=0.6",
   "mkdocs-section-index>=0.3",
   "pymdown-extensions>=10.7",
+  "mike>=2.1",  # version-switcher dropdown on gh-pages
 ]
 otel = [
   "opentelemetry-api>=1.27",

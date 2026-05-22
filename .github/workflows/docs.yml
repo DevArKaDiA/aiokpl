@@ -1,36 +1,65 @@
 name: Docs
 
+# Versioned docs via mike (https://github.com/jimporter/mike):
+#   - push to main      → publishes /dev/
+#   - push of v*  tag   → publishes /<major>.<minor>/ aliased as 'latest'
+#   - pull_request      → strict build only, no deploy
+# Each push appends to the gh-pages branch; mike manages the versions/
+# directory layout and rewrites versions.json that mkdocs-material's
+# version dropdown reads.
+
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # mike commits to gh-pages → never run two deploys in parallel.
+  group: docs-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
   build:
-    name: Build (and deploy on main)
+    name: Build (and deploy on main or tag)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          persist-credentials: false
+          # mike walks gh-pages history; needs the full clone.
+          fetch-depth: 0
+          persist-credentials: true
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
       - name: Install docs extras
         run: uv pip install --system -e ".[docs]"
-      - name: Build docs (strict)
+
+      - name: Strict build (every event)
         run: mkdocs build --strict
-      - name: Deploy to gh-pages
+
+      - name: Configure git for mike commits
+        if: github.event_name == 'push'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin gh-pages --depth=1 || echo "gh-pages branch not yet created — mike will create it"
+
+      - name: Deploy dev docs (push to main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: peaceiris/actions-gh-pages@1ef5a1b1df4c63fe21a2242edbee6cac921ece01 # v4.1.0
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./site
+        run: mike deploy --push --update-aliases dev
+
+      - name: Deploy versioned docs (tag push)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          # Strip patch and any pre-release suffix → MAJOR.MINOR
+          MM=$(echo "$TAG" | awk -F. '{print $1"."$2}')
+          echo "Publishing docs as version '$MM' aliased as 'latest' (from tag $TAG)"
+          mike deploy --push --update-aliases "$MM" latest
+          mike set-default --push latest

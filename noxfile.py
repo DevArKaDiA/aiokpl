@@ -63,10 +63,13 @@ def lint(session: nox.Session) -> None:
 def typecheck(session: nox.Session) -> None:
     """Run ty (Astral's type checker, mypy successor).
 
-    ty is pre-release; the CLI surface may change. We try the expected
-    invocation and fall back to a version probe if it isn't yet usable.
+    ty resolves imports against the installed environment, so we install
+    every extra the tests touch (pytest, anyio, opentelemetry, datadog,
+    docker, ...) — otherwise `ty check tests` flags every external
+    import as unresolved. ty is pre-release; the CLI surface may change.
+    We fall back to a version probe if the invocation breaks.
     """
-    session.install("-e", ".[lint]")
+    session.install("-e", ".[lint,test,integration,otel,datadog]")
     try:
         session.run("ty", "check", "aiokpl", "tests")
     except nox.command.CommandFailed:
