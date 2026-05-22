@@ -77,7 +77,7 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://github.com/juanrojas/aiokpl"
+Repository = "https://github.com/DevArKaDiA/aiokpl"
 
 [tool.hatch.build.targets.wheel]
 packages = ["aiokpl"]

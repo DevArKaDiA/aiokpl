@@ -7,7 +7,7 @@ lint, typecheck, tests, and coverage.
 ## Clone and install
 
 ```bash
-git clone https://github.com/juanrojas/aiokpl.git
+git clone https://github.com/DevArKaDiA/aiokpl.git
 cd aiokpl
 uv venv
 source .venv/bin/activate

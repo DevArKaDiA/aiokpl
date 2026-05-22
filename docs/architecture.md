@@ -22,7 +22,7 @@ finish_user_record  →  resolves the user's awaitable future
 ```
 
 For the full C++ ↔ Python mapping table, see
-[`CLAUDE.md`](https://github.com/juanrojas/aiokpl/blob/main/CLAUDE.md#architecture-mapping-c--python).
+[`CLAUDE.md`](https://github.com/DevArKaDiA/aiokpl/blob/main/CLAUDE.md#architecture-mapping-c--python).
 
 ## Stages
 
@@ -67,7 +67,7 @@ not hammer downstream from SDK callback threads.)
 The most important code in the library. For each per-record result inside
 the `PutRecords` response, the retrier classifies the outcome and decides
 the next step. See the
-[classification table in CLAUDE.md](https://github.com/juanrojas/aiokpl/blob/main/CLAUDE.md#retrier-classification-the-most-important-code-in-the-library)
+[classification table in CLAUDE.md](https://github.com/DevArKaDiA/aiokpl/blob/main/CLAUDE.md#retrier-classification-the-most-important-code-in-the-library)
 for the full rules. On terminal outcomes (`finish` or `fail`), the
 retrier resolves the user's future with a `RecordResult`.
 
