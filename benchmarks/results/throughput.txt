@@ -1,23 +1,26 @@
 [bench_throughput] starting kinesis-mock…
-[bench_throughput] endpoint=https://localhost:56710
+[bench_throughput] endpoint=https://localhost:57487
 
 === shards=1 ===
-  running aiokpl async agg=on…
-    -> rps=8,637 elapsed=2.32s
+  running aiokpl async agg=on (confirmed)…
+    -> rps=8,572 elapsed=2.33s
+  running aiokpl async agg=on (fire-and-forget)…
+    -> rps=9,296 elapsed=2.15s
   running aiokpl async agg=off…
-    -> rps=210 elapsed=95.39s
+    -> rps=211 elapsed=94.80s
   running aiokpl sync agg=on…
-    -> rps=3,896 elapsed=5.13s
+    -> rps=3,820 elapsed=5.24s
   running boto3 put_records…
-    -> rps=124 elapsed=16.19s
+    -> rps=127 elapsed=15.76s
   running aws-kinesis-agg + boto3…
-    -> rps=30,093 elapsed=0.33s
+    -> rps=28,960 elapsed=0.35s
 
 === Throughput results ===
-| variant                 |   shards |     N |   elapsed (s) |    rps |   p50 ms |   p99 ms |   p99.9 ms | notes   |
-|-------------------------|----------|-------|---------------|--------|----------|----------|------------|---------|
-| aiokpl async agg=on     |        1 | 20000 |         2.316 |  8,637 |  1172.41 |  2172.36 |    2189.05 |         |
-| aiokpl async agg=off    |        1 | 20000 |        95.391 |    210 | 44389.9  | 88425.6  |   88521    |         |
-| aiokpl sync agg=on      |        1 | 20000 |         5.134 |  3,896 |  2559.57 |  3918.55 |    3940.78 |         |
-| boto3 put_records       |        1 |  2000 |        16.189 |    124 |  4100.91 |  4238.34 |    4238.34 |         |
-| aws-kinesis-agg + boto3 |        1 | 10000 |         0.332 | 30,093 |   332.3  |   332.3  |     332.3  |         |
+| variant                               |   shards |     N |   elapsed (s) |    rps |   p50 ms |   p99 ms |   p99.9 ms | notes   |
+|---------------------------------------|----------|-------|---------------|--------|----------|----------|------------|---------|
+| aiokpl async agg=on (confirmed)       |        1 | 20000 |         2.333 |  8,572 |  1179.64 |  2168.17 |    2184.79 |         |
+| aiokpl async agg=on (fire-and-forget) |        1 | 20000 |         2.151 |  9,296 |  2151.43 |  2151.43 |    2151.43 |         |
+| aiokpl async agg=off                  |        1 | 20000 |        94.805 |    211 | 47199    | 88330.1  |   88413.7  |         |
+| aiokpl sync agg=on                    |        1 | 20000 |         5.235 |  3,820 |  2620.57 |  3992.11 |    4015.18 |         |
+| boto3 put_records                     |        1 |  2000 |        15.763 |    127 |  4072.04 |  4101.81 |    4101.81 |         |
+| aws-kinesis-agg + boto3               |        1 | 10000 |         0.345 | 28,960 |   345.3  |   345.3  |     345.3  |         |

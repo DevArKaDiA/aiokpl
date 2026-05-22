@@ -24,6 +24,8 @@ import time
 import uuid
 from typing import Any
 
+import anyio
+
 from benchmarks._harness import (
     BenchResult,
     create_stream,
@@ -98,6 +100,47 @@ async def _aiokpl_async(
                 tg.create_task(_await(i, o))
         elapsed = time.perf_counter() - t0
     return elapsed, latencies
+
+
+async def _aiokpl_fire_and_forget(
+    endpoint_url: str,
+    stream: str,
+    n: int,
+) -> tuple[float, list[float]]:
+    """aiokpl async with aggregation, no per-record `outcome.wait()`.
+
+    Fair head-to-head against ``aws-kinesis-agg + boto3``, which is also
+    fire-and-forget. We still need to drain in-flight records before exit
+    (otherwise teardown races retries) — we do that by polling
+    ``outstanding_records`` after ``flush()``. The reported elapsed
+    includes that drain, which is the honest end-to-end time for the
+    "submitted, ack'd, no per-record bookkeeping by the caller" path.
+    """
+    from aiokpl import Config, Producer
+
+    cfg = Config(
+        region="us-east-1",
+        endpoint_url=endpoint_url,
+        verify_ssl=False,
+        aws_access_key_id="testing",
+        aws_secret_access_key="testing",
+        aggregation_enabled=True,
+        record_max_buffered_time_ms=50.0,
+        max_outstanding_records=n + 1000,
+    )
+    records = _make_records(n)
+
+    async with Producer(cfg) as producer:
+        t0 = time.perf_counter()
+        for pk, data in records:
+            await producer.put_record(stream=stream, partition_key=pk, data=data)
+        await producer.flush()
+        # Poll until everything drains. We don't await per-record outcomes,
+        # but we do need the pipeline empty before teardown.
+        while producer.outstanding_records > 0:
+            await anyio.sleep(0.005)
+        elapsed = time.perf_counter() - t0
+    return elapsed, [elapsed] * n
 
 
 def _aiokpl_sync(
@@ -241,8 +284,13 @@ def _run_one(
 def _variants(endpoint: str, stream: str) -> list[tuple[str, Any, int]]:
     return [
         (
-            "aiokpl async agg=on",
+            "aiokpl async agg=on (confirmed)",
             lambda: asyncio.run(_aiokpl_async(endpoint, stream, N_AIOKPL, aggregation=True)),
+            N_AIOKPL,
+        ),
+        (
+            "aiokpl async agg=on (fire-and-forget)",
+            lambda: asyncio.run(_aiokpl_fire_and_forget(endpoint, stream, N_AIOKPL)),
             N_AIOKPL,
         ),
         (

@@ -1,150 +1,179 @@
 # Benchmarks
 
-These numbers measure `aiokpl` against the existing Python Kinesis
-ecosystem on a local emulator. Read the [caveats](#caveats) before reading
-the tables — kinesis-mock is not real AWS, and one of the variants
-(`aws-kinesis-agg + boto3`) is fire-and-forget while the others track
-per-record delivery. The numbers tell a story, but only the right story.
+This page measures `aiokpl` against the existing Python Kinesis ecosystem.
+Before the numbers, the framing — because the numbers don't mean the same
+thing across rows.
 
-## Variants compared
+## Apples and oranges
 
-| Variant | What it does | Per-record outcome? |
-|---|---|:---:|
-| `aiokpl async agg=on` | Full pipeline, aggregation enabled | ✅ |
-| `aiokpl async agg=off` | Same pipeline, aggregation off (each user record = one Kinesis record) | ✅ |
-| `aiokpl sync agg=on` | `SyncProducer` (anyio portal on a background thread) | ✅ |
-| `boto3.put_records` | Naive sync batcher: 500 records per call, no aggregation | partial (whole batch) |
-| `aws-kinesis-agg + boto3` | Encode aggregated records via `aws-kinesis-agg`, send via `boto3.put_records` | ❌ fire-and-forget |
+Two things called "throughput" are being measured here:
 
-`aws-kinesis-agg + boto3` does not track per-record outcomes — it ships an
-aggregated blob and never knows which user-records inside it succeeded.
-Apples to oranges with everything else in the table. We keep it because
-it's the closest approximation of "what people do in Python today" and the
-gap is part of why `aiokpl` exists.
+- **Bytes-per-second on the wire.** How fast a process can serialize and
+  push records to Kinesis. No knowledge of which records succeeded.
+- **Records-with-confirmation-per-second.** How fast a process can submit
+  a record AND receive its `sequence_number` back from Kinesis.
+
+These are different products. The Python ecosystem has tools for the
+first (`aws-kinesis-agg + boto3`, raw `boto3.put_records`). `aiokpl` is the
+only thing that ships the second.
+
+| Variant | Per-record outcomes? | Retry on failure? | Shard prediction? | Backpressure? |
+|---|:---:|:---:|:---:|:---:|
+| `aiokpl async agg=on` (confirmed) | ✅ | ✅ | ✅ | ✅ |
+| `aiokpl async agg=on` (fire-and-forget) | ❌ | ✅ | ✅ | ✅ |
+| `aiokpl async agg=off` | ✅ | ✅ | ✅ | ✅ |
+| `aiokpl sync agg=on` | ✅ | ✅ | ✅ | ✅ |
+| `boto3.put_records` (batched) | ❌ (batch-level only) | ❌ | ❌ | ❌ |
+| `aws-kinesis-agg + boto3` | ❌ | ❌ | ❌ | ❌ |
+
+Read the throughput table with the columns above open in the other tab.
+"Rps" rows in the same table are not strictly comparable.
 
 ## Throughput
 
-20 000 records of 200 bytes each, single shard, run end-to-end against
-`etspaceman/kinesis-mock:0.5.2` in Docker on loopback.
+20 000 records of 200 bytes each, single shard, end-to-end against
+`etspaceman/kinesis-mock:0.5.2` in Docker on loopback. The boto3 variants
+ran with reduced N because they saturate kinesis-mock's CPU above
+~200 rps; see [caveats](#caveats).
 
-| Variant | Records sent | Elapsed | Throughput |
+| Variant | Records | Elapsed | Throughput |
 |---|---:|---:|---:|
-| `aiokpl async agg=on` | 20 000 | 2.32 s | **8 637 rps** |
-| `aiokpl sync agg=on` | 20 000 | 5.13 s | 3 896 rps |
-| `aiokpl async agg=off` | 20 000 | 95.39 s | 210 rps |
-| `boto3.put_records` (batched 500) | 2 000 | 16.19 s | 124 rps |
-| `aws-kinesis-agg + boto3` (fire-and-forget) | 10 000 | 0.33 s | 30 093 rps |
+| `aws-kinesis-agg + boto3` (no outcomes, no retries) | 10 000 | 0.35 s | **28 960 rps** |
+| `aiokpl async agg=on` (fire-and-forget) | 20 000 | 2.15 s | 9 296 rps |
+| `aiokpl async agg=on` (confirmed) | 20 000 | 2.33 s | 8 572 rps |
+| `aiokpl sync agg=on` (confirmed) | 20 000 | 5.24 s | 3 820 rps |
+| `aiokpl async agg=off` (per-record PutRecords) | 20 000 | 94.81 s | 211 rps |
+| `boto3.put_records` (batched 500) | 2 000 | 15.76 s | 127 rps |
 
-Reading this:
+### Reading the numbers honestly
 
-- **Aggregation is the whole game.** `aiokpl` with aggregation moves
-  ~41× more records per second than the same pipeline with aggregation
-  disabled. This is the single most consequential knob in the library.
-- **Per-record outcomes cost ~3×** vs fire-and-forget on kinesis-mock.
-  `aws-kinesis-agg + boto3` ships at 30 k rps but never tells you which
-  records failed. `aiokpl` ships at 8.6 k rps and resolves a
-  `RecordResult` (with shard id, sequence number, and full attempt
-  history) for every single record. If you can afford to lose visibility
-  on retries, you don't need a real producer.
-- **Naive `boto3.put_records` is not a competitor.** 124 rps single-threaded
-  is what it looks like when nobody is grouping by predicted shard or
-  amortizing HTTPS connections. The number is here to make the gap
-  explicit, not because it's a baseline you should target.
-- **The sync bridge is ~55 % of async throughput.** The cost of bouncing
-  through `anyio.from_thread.BlockingPortal` for every `put_record`.
-  Pay it if you have to (Flask, Django, Celery, scripts); reach for the
-  async path if you have an event loop.
+**1 — `aws-kinesis-agg + boto3` wins on raw throughput. By 3×.**
 
-`aiokpl async agg=off` and `boto3.put_records` were run with reduced N
-because they saturate kinesis-mock's CPU above ~200 rps. See
-[caveats](#caveats).
+It's not magic. It encodes the input into 1-4 aggregated records that fit
+in a single `PutRecords` call and ships them. It does not track which
+user-records inside each blob actually landed. It does not retry. It does
+not predict shards (it assumes all records aggregated together share a
+shard — which is wrong in multi-shard streams, but kinesis-mock doesn't
+enforce that). For a workload that is genuinely "fire records, let
+downstream detect losses", that's the right tool and it will be faster.
+
+**2 — The `aiokpl` confirmed-vs-fire-and-forget gap is only 8 %.**
+
+`aiokpl async agg=on (confirmed)` is 8 572 rps. The same configuration
+without `await outcome.wait()` per record is 9 296 rps. The cost of
+per-record outcome tracking is small. The cost of `aiokpl` over
+`aws-kinesis-agg` (~3×) is the *pipeline* — per-record shard prediction,
+per-shard rate limiting, retry classification, backpressure — not the
+outcome bookkeeping.
+
+That's an architectural floor, not a bug. If your workload doesn't need
+those features, you don't need a producer; the codec is enough.
+
+**3 — Aggregation is the single biggest knob.**
+
+`aiokpl async agg=on` is 8 572 rps. The same code with
+`aggregation_enabled=False` is 211 rps — a **41× drop**. Without
+aggregation each user record becomes its own Kinesis record and your
+throughput is bottlenecked by the HTTPS round-trip per call. This is
+exactly why the C++ KPL invented aggregation in 2015 and why `aiokpl`
+exists.
+
+**4 — Naive `boto3.put_records` is not a competitor.**
+
+127 rps single-threaded with 500-record batches is what dumb batching
+costs you. It's here to make the gap explicit, not because it's a
+baseline anyone should target.
+
+**5 — The sync bridge is ~45 % of async throughput.**
+
+`SyncProducer` bounces every `put_record` through an `anyio` portal on a
+background thread. Pay it if you must (Flask, Django, Celery, scripts);
+reach for the async path if you have an event loop.
 
 ## Latency
 
-1 000 records submitted one at a time with ~1 ms inter-arrival, 2 shards,
-end-to-end against the same emulator.
+1 000 records submitted one at a time with ~1 ms inter-arrival,
+2 shards, against the same emulator.
 
 | Variant | P50 | P99 | P99.9 |
 |---|---:|---:|---:|
+| `boto3.put_records` (batched 500) | **105 ms** | 170 ms | 174 ms |
+| `aws-kinesis-agg + boto3` | 698 ms | 1 331 ms | 1 342 ms |
 | `aiokpl async agg=on` | 778 ms | 1 473 ms | 1 484 ms |
 | `aiokpl async agg=off` | 798 ms | 1 475 ms | 1 487 ms |
 | `aiokpl sync agg=on` | 959 ms | 1 755 ms | 1 767 ms |
-| `boto3.put_records` (batched 500) | **105 ms** | 170 ms | 174 ms |
-| `aws-kinesis-agg + boto3` | 698 ms | 1 331 ms | 1 342 ms |
 
 Reading this:
 
-- **`boto3.put_records` wins on P50** — it's a tight sync loop that
-  records a "latency" as the wall-clock since the batch started. There's
-  no concept of per-record durability point. Compare it with the
-  throughput row: 105 ms P50 at 124 rps is what you get when you don't
-  batch.
+- **`boto3.put_records` is the latency winner here, but on a synthetic
+  metric.** Latency for the boto3 row is "elapsed since the batch
+  started" — every record in a 500-record batch sees the same number.
+  That's not a per-record durability time. Compare against its 127 rps
+  throughput: the metric reflects how fast a tight sync loop runs, not
+  how fast records become durable.
 - **`aiokpl` and `aws-kinesis-agg` cluster around 700-1 500 ms** because
-  both pay the buffered-time deadline (default 100 ms in aiokpl) plus
+  both pay the buffered-time deadline (100 ms in aiokpl) plus
   kinesis-mock's per-call latency on aggregated batches.
-- **P99.9 is tight to P99** for every variant — there are no long tails
-  on the emulator. Real AWS will have a different tail; you'll see
-  throttle backoffs and split-shard convergence in production where
-  there are none here.
+- **P99.9 is tight to P99** across the board — there are no long tails
+  on the emulator. Real AWS has different tails (throttle backoffs,
+  split-shard convergence); those don't show up here.
 
 ## Caveats
 
-These results are **relative**, not absolute. Specifically:
+These numbers are **relative**, not absolute. Specifically:
 
 1. **kinesis-mock is not real AWS.** It's an in-process Scala
-   reimplementation of the Kinesis API for testing. It has its own latency
-   characteristics (mostly internal scheduling, no network), no real rate
-   limits, no real shard provisioning, and a single-machine CPU ceiling
-   we hit hard on non-aggregated variants. The shape of the results
-   (aggregation matters, per-record outcomes have a cost) is the same
-   shape you'll see against real AWS — the absolute numbers will not be.
+   reimplementation for testing. It has its own latency characteristics
+   (mostly internal scheduling, no network), no real rate limits, no
+   real shard provisioning, and a single-machine CPU ceiling we hit on
+   non-aggregated variants. The shape (aggregation matters; per-record
+   pipelines cost CPU) carries over to real AWS — the absolute numbers
+   do not.
 
-2. **The CPU ceiling forced compromises.** We initially tried
-   `[1, 4, 8]`-shard runs at 20 000 records. The unaggregated variants
-   (`aiokpl agg=off`, `boto3 raw`) saturate kinesis-mock above
-   ~200 rps regardless of shard count, hanging the emulator on the
-   higher loads. The shipped numbers are single-shard with reduced N
-   (2 000 records for the boto3 variants), enough to be statistically
-   meaningful without crashing the emulator. Real AWS multi-shard scaling
-   is linear; that part doesn't need a benchmark to claim.
+2. **The CPU ceiling forced compromises.** We initially tried `[1, 4, 8]`-shard
+   runs at 20 000 records. The unaggregated variants saturate kinesis-mock
+   above ~200 rps regardless of shard count, hanging the emulator. The
+   shipped numbers are single-shard with reduced N (2 000 records for
+   `boto3.put_records`, 10 000 for `aws-kinesis-agg + boto3`). Real-AWS
+   multi-shard scaling is linear by design; that part doesn't need a
+   benchmark to claim.
 
-3. **`aws-kinesis-agg + boto3` does not track per-record outcomes.**
-   It encodes an aggregated blob and ships it. If the call fails, the
-   caller knows; if 47 out of 1 200 records inside the blob were the
-   ones that hit a throttle, the caller does not know. Every other
-   variant in the tables surfaces a `RecordResult` for each user
-   record. Compare the rows with that in mind.
+3. **The fire-and-forget variants drop most of what aiokpl does.** They
+   are listed because they answer the natural question "how fast COULD
+   aiokpl push bytes if I disabled the bookkeeping?". The answer is
+   ~9 300 rps — and you give up per-record outcomes, retry classification
+   visibility, and the ability to know which records failed. If the
+   producer's job is "push events I care about", confirmed is the only
+   honest measurement.
 
-4. **`aiokpl` measures end-to-end including outcome resolution.**
-   "Throughput" = time from the first `put_record` to the last
-   `outcome.wait()` resolving. "Latency" = `outcome.wait()` resolution
-   timestamp minus `put_record` invocation timestamp. The
-   `aws-kinesis-agg` variant has no equivalent end-state to measure
-   against — its synthetic latency is the inter-call interval.
+4. **`aiokpl` measures end-to-end.** Throughput for confirmed mode is the
+   wall clock from the first `put_record` to the last `outcome.wait()`
+   returning. The fire-and-forget variant ends at `outstanding_records ==
+   0` (the pipeline has drained, but the caller didn't observe any
+   per-record result). The `aws-kinesis-agg` row ends at the boto3
+   `put_records` return — no equivalent end state because no per-record
+   tracking exists.
 
-5. **Sync variants are limited by GIL + single-thread.** No threading,
-   no multiprocessing. `SyncProducer` spends most of its CPU bouncing
-   between the calling thread and the portal thread; replacing that
-   with a thread pool wouldn't help (the bottleneck is per-record
-   coordination, not throughput).
+5. **No retries forced.** kinesis-mock doesn't throttle naturally. Every
+   record succeeds first try here. Real-world numbers will include
+   retry latency for throttle/transient errors — and those costs land
+   on `aiokpl` (which does retries), not on `aws-kinesis-agg + boto3`
+   (which would just lose the records and never know).
 
 ## Methodology
 
 - **Backend**: `ghcr.io/etspaceman/kinesis-mock:0.5.2` on Docker, single
-  container, default config, talking HTTPS on `localhost:4567` with a
-  self-signed cert.
+  container, default config, HTTPS on `localhost:4567`, self-signed cert.
 - **Host**: Apple Mac16,7 (M4 Pro, 14 cores), 48 GB RAM, macOS,
   Python 3.12.13.
-- **Library version**: `aiokpl` 0.2.0 (commit `ad4c4b4`).
+- **Library version**: `aiokpl` 0.2.0 at commit `ad4c4b4`.
 - **Records**: 200-byte payloads, partition keys cycled across 256
-  distinct values to spread across shards.
-- **Knobs**: every variant runs with `aiokpl`'s default `Config`
-  (`record_max_buffered_time_ms=100`, `record_ttl_ms=30_000`,
-  `max_outstanding_records=100_000`, etc.) for `aiokpl` variants. The
-  boto3-based variants use boto3 defaults.
-- **No retries forced.** kinesis-mock doesn't throttle naturally; every
-  record succeeds on the first try in these runs. Real-world numbers
-  will include retry latency for throttle/transient errors.
+  distinct values.
+- **`aiokpl` configuration**: defaults (`record_max_buffered_time_ms=50`
+  for benches, `record_ttl_ms=30_000`, `max_outstanding_records ≥ N`).
+- **boto3 / aws-kinesis-agg configuration**: boto3 defaults (no custom
+  pool sizing). `aws-kinesis-agg` uses 1 MiB aggregation cap; ships 500
+  aggregated records per `put_records` call.
 
 ## Reproducing
 
@@ -158,19 +187,21 @@ python -m benchmarks.bench_throughput | tee benchmarks/results/throughput.txt
 python -m benchmarks.bench_latency    | tee benchmarks/results/latency.txt
 ```
 
-Results land as Markdown tables in stdout and as JSON in
-`benchmarks/results/*.json`. Cross-machine comparison is fair —
-kinesis-mock's CPU starvation point is roughly machine-independent (it's
-an event-loop saturation, not a throughput cap).
+Total runtime: 2-3 minutes for throughput, 1-2 minutes for latency.
+Cross-machine comparison is fair — kinesis-mock's CPU starvation point is
+roughly machine-independent (it's event-loop saturation, not a throughput
+cap).
 
-## What's *not* here
+## When each variant is the right answer
 
-- **Real-AWS numbers.** Would cost money, would need a stable runner,
-  and wouldn't be reproducible across readers. Out of scope for the
-  shipped tables; if you want them, run the scripts against your own
-  account with `AIOKPL_ENDPOINT_URL` unset.
-- **Throttle behavior.** kinesis-mock doesn't throttle. Retry-path
-  latency under throttling is a real-AWS-only measurement.
-- **Split-shard convergence.** `ShardMap.invalidate` is tested in
-  integration but not benchmarked — the latency cost is dominated by
-  `ListShards` round-trip, not by any aiokpl logic.
+| Workload | Reach for |
+|---|---|
+| Mobile/web telemetry — high volume, downstream detects loss | `aws-kinesis-agg + boto3` |
+| < 100 rps total, simple integration | `boto3.put_records` (batched) |
+| Events that matter (webhooks, transactions, observability pipelines) | `aiokpl` (confirmed) |
+| You need shard prediction, retries, rate limiting, but acks at the batch level are enough | `aiokpl` (fire-and-forget) |
+| You can't run an async event loop | `aiokpl.SyncProducer` |
+
+The 3× throughput gap between `aws-kinesis-agg + boto3` and `aiokpl` is
+the cost of the safety net. Whether you should pay it depends on whether
+losing records silently is something your downstream can recover from.
