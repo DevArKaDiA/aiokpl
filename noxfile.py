@@ -16,8 +16,14 @@ PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13"]
 
 @nox.session(python=PYTHON_VERSIONS)
 def tests(session: nox.Session) -> None:
-    """Run the unit test suite with coverage, excluding integration tests."""
-    session.install("-e", ".[test]")
+    """Run the unit test suite with coverage, excluding integration tests.
+
+    Installs the optional metric-sink extras so the lazy-imported
+    ``OpenTelemetrySink`` and ``DatadogSink`` modules participate in
+    coverage; without them those files would import-fail at collection
+    time and the 100% gate could never be reached.
+    """
+    session.install("-e", ".[test,otel,datadog]")
     session.run(
         "pytest",
         "--cov=aiokpl",
@@ -31,9 +37,9 @@ def tests(session: nox.Session) -> None:
 
 @nox.session(python="3.12")
 def integration(session: nox.Session) -> None:
-    """Run integration tests (empty in Phase 1)."""
-    session.install("-e", ".[test,integration]")
-    session.run("pytest", "-m", "integration", *session.posargs)
+    """Run integration tests against kinesis-mock (Docker required)."""
+    session.install("-e", ".[test,integration,otel,datadog]")
+    session.run("pytest", "-m", "integration", "-v", *session.posargs)
 
 
 @nox.session(python="3.12")

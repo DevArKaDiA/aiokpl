@@ -51,6 +51,26 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
 
+  integration:
+    name: Integration tests (kinesis-mock)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v3
+      - name: Install nox
+        run: uv pip install --system nox
+      - name: Verify Docker is available
+        run: docker version
+      - name: Pre-pull kinesis-mock image
+        run: docker pull ghcr.io/etspaceman/kinesis-mock:0.5.2
+      - name: Run integration tests (fast lane only)
+        run: nox -s integration -- -m "integration and not slow"
+      - name: Run slow integration tests
+        run: nox -s integration -- -m "integration and slow"
+
   coverage-gate:
     name: Coverage gate (100%)
     runs-on: ubuntu-latest
